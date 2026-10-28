@@ -1,0 +1,840 @@
+"""Synthetix LightRAG indexing — stores chunks into LightRAG knowledge graph.
+
+Supports two index modes:
+  - basic: chunk storage + embedding only (no entity extraction, fast)
+  - graph: chunk storage + entity/relation extraction → knowledge graph (requires LLM)
+
+Storage is determined by environment variables — defaults to local file-based storage.
+For enterprise deployments, set LIGHTRAG_* env vars for pgvector/Milvus/Qdrant/Neo4j.
+
+Usage:
+  python rag_index.py --doc-id <id> --user-id <uid> --chunks-dir <dir>
+         --index-mode [basic|graph]
+         [--embeddings-file <path>]          # pre-computed embeddings (avoids API calls)
+         [--embed-api-base <url>] [--embed-api-key <key>] [--embed-model <name>]
+         [--llm-api-base <url>] [--llm-api-key <key>] [--llm-model <name>]
+
+Output: JSON to stdout
+"""
+import sys
+import json
+import os
+import struct
+import argparse
+import asyncio
+from contextlib import suppress
+from typing import Optional
+
+# Patch atomic_write BEFORE importing LightRAG storage classes so the retry
+# logic covers the high-frequency graphml flushes during entity extraction.
+from win_atomic_patch import apply_patch
+apply_patch()
+
+from lightrag import LightRAG
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+from lightrag.utils import EmbeddingFunc
+from rag_common import load_storage_config, build_rerank_func, resolve_embed_dim, resolve_user_rag_dir
+from rag_mutation_lock import user_rag_mutation_lock, RagMutationBusyError
+from adaptive_limiter import wrap_llm_func
+
+
+def emit_progress(stage: str, progress: int, message: str, **extra) -> None:
+    event = {
+        "type": "progress",
+        "stage": stage,
+        "progress": max(0, min(100, int(progress))),
+        "message": message,
+    }
+    event.update({k: v for k, v in extra.items() if v is not None})
+    print(json.dumps(event, ensure_ascii=False), file=sys.stderr, flush=True)
+
+
+def emit_usage(module: str, input_tokens: int, output_tokens: int) -> None:
+    """Emit a token-usage event line on stderr (parsed by Node's spawnPython).
+
+    LightRAG's `token_tracker` interface gives us per-call counts during graph
+    extraction; we forward them here so the Token Usage Analytics page can
+    attribute the spend back to the LLM model. Without this hook the entire
+    knowledge-graph extraction stage was invisible to billing.
+    """
+    if input_tokens <= 0 and output_tokens <= 0:
+        return
+    event = {
+        "type": "usage",
+        "module": module,
+        "input_tokens": int(input_tokens),
+        "output_tokens": int(output_tokens),
+    }
+    print(json.dumps(event, ensure_ascii=False), file=sys.stderr, flush=True)
+
+
+class StdoutTokenTracker:
+    """Implements LightRAG's token_tracker contract (`add_usage(dict)`).
+
+    LightRAG calls `tracker.add_usage({"prompt_tokens": ..., "completion_tokens": ...})`
+    after each LLM round-trip; we re-emit those numbers as stderr `usage` events
+    so the Node side can record them via `recordTokenUsage`.
+    """
+
+    def __init__(self, module: str) -> None:
+        self._module = module
+
+    def add_usage(self, counts: dict) -> None:
+        try:
+            prompt = int(counts.get("prompt_tokens", 0) or 0)
+            completion = int(counts.get("completion_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        emit_usage(self._module, prompt, completion)
+
+
+async def _heartbeat_loop(
+    progress_state: dict,
+    interval_s: float,
+    message: str,
+    emit=emit_progress,
+    sleep=None,
+) -> None:
+    """Emit a progress event every `interval_s` seconds, reading the latest
+    done/total from `progress_state` (a shared dict). Guarantees lastHeartbeatAt
+    stays fresh during slow LLM extraction — a single hung provider call would
+    otherwise freeze progress for 15+ min, tripping the Node-side heartbeat-stall
+    detector (queue.ts, 5 min threshold).
+
+    Designed to run as an asyncio.Task alongside insert_chunks; the caller
+    cancels it when insertion completes. `emit` and `sleep` are injectable for
+    testing (sleep defaults to asyncio.sleep).
+    """
+    _sleep = sleep if sleep is not None else asyncio.sleep
+    while True:
+        await _sleep(interval_s)
+        done = progress_state.get("done", 0)
+        total = progress_state.get("total", 0)
+        progress = 40 + int((done / max(total, 1)) * 50)
+        emit("indexing", progress, message, processed=done, total=total)
+
+
+def get_insert_batch_size(index_mode: str, env: dict | None = None) -> int:
+    source = env if env is not None else os.environ
+    if index_mode == "graph":
+        return int(source.get("LIGHTRAG_GRAPH_INSERT_BATCH_SIZE", source.get("LIGHTRAG_INSERT_BATCH_SIZE", "5")))
+    return int(source.get("LIGHTRAG_INSERT_BATCH_SIZE", "20"))
+
+
+def should_bulk_insert_graph(env: dict | None = None) -> bool:
+    """Whether graph mode submits chunks to LightRAG in batches (parallel entity
+    extraction across chunks) or one at a time (serial).
+
+    DEFAULT IS NOW TRUE. The serial path was a conservative default left over
+    from early LightRAG versions where bulk ainsert would skip entity/relation
+    extraction. On lightrag-hku>=1.5.4 (our pinned version, requirements.txt),
+    `rag.ainsert(list_of_strings, ids=list, file_paths=list)` extracts entities
+    for ALL chunks in the batch and runs them through the entity/relation merge
+    phase together — and LightRAG's internal llm_model_max_async (set to 4× the
+    limiter cap so it never throttles) parallelizes the per-chunk extraction LLM
+    calls within the batch. The adaptive limiter (AIMD, 2..16 dynamic) is the
+    sole concurrency bottleneck.
+
+    The serial default under-used the provider: the serial ainsert loop fed
+    chunks to LightRAG one batch at a time, so the chunk-to-chunk critical path
+    was fully sequential even though the LLM provider had headroom for more
+    concurrent extractions. Bulk mode lets LightRAG schedule extractions across
+    the whole batch in parallel.
+
+    Set LIGHTRAG_GRAPH_BULK_INSERT=false to opt back out if a LightRAG upgrade
+    regresses bulk-extraction quality.
+    """
+    source = env if env is not None else os.environ
+    return str(source.get("LIGHTRAG_GRAPH_BULK_INSERT", "true")).lower() in {"1", "true", "yes", "on"}
+
+
+def _read_positive_int(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_llm_max_async() -> int:
+    """LightRAG's internal LLM concurrency for entity/relation extraction.
+
+    LightRAG creates an asyncio.Semaphore(llm_model_max_async) that gates ALL
+    chunk-level extraction calls BEFORE they reach the adaptive limiter's
+    acquire(). If this Semaphore is too small, it becomes the binding bottleneck
+    and the AIMD limiter never sees enough requests to probe upward — the
+    dynamic concurrency discovery is effectively disabled.
+
+    To let the adaptive limiter be the SOLE bottleneck, we set the Semaphore to
+    4× the limiter's hard cap (LLM_LIMITER_MAX_REQUESTS_GRAPH, default 16). This
+    ensures every chunk passes through to acquire(), where AIMD dynamically
+    controls the actual concurrency based on real provider capacity (429
+    back-pressure, latency gradient). The Semaphore becomes a pure safety rail
+    against runaway coroutine creation, not a performance throttle.
+
+    MAX_ASYNC_LLM is kept as a deprecated escape hatch for backward compat — if
+    set, it still wins (returned as-is), but prefer removing it and letting the
+    4× auto-alignment engage.
+    """
+    cap = _read_positive_int("LLM_LIMITER_MAX_REQUESTS_GRAPH", 16)
+    legacy = os.environ.get("MAX_ASYNC_LLM")
+    if legacy:
+        try:
+            legacy_val = int(legacy)
+            if legacy_val > 0:
+                return legacy_val
+        except (TypeError, ValueError):
+            pass
+    # 4× cap: Semaphore is a safety rail, never the bottleneck. The adaptive
+    # limiter (cap=16, dynamic 2..16 based on AIMD budget) controls real concurrency.
+    return cap * 4
+
+
+def _llm_error_message(error: Exception) -> str:
+    return f"{type(error).__name__}: {error}".lower()
+
+
+def _is_transient_llm_connection_error(error: Exception) -> bool:
+    msg = _llm_error_message(error)
+    markers = (
+        "apiconnectionerror",
+        "connection error",
+        "connecterror",
+        "connect error",
+        "getaddrinfo failed",
+        "name resolution",
+        "temporary failure in name resolution",
+        "timeout",
+        "timed out",
+        "etimedout",
+        "econnreset",
+        "connection reset",
+        "connection refused",
+        "remote protocol error",
+    )
+    return any(marker in msg for marker in markers)
+
+
+def _graph_llm_retry_delay_ms(base_ms: int, attempt: int) -> int:
+    factors = (1, 2.5, 5)
+    if attempt <= len(factors):
+        return int(base_ms * factors[attempt - 1])
+    return int(base_ms * factors[-1] * (2 ** (attempt - len(factors))))
+
+
+async def _call_graph_llm_with_connection_retry(call, sleep_fn=asyncio.sleep) -> str:
+    retries = _read_positive_int("GRAPH_LLM_CONNECTION_RETRIES", 3)
+    base_ms = _read_positive_int("GRAPH_LLM_CONNECTION_BACKOFF_MS", 2000)
+    for attempt in range(retries + 1):
+        try:
+            return await call()
+        except Exception as error:
+            if attempt >= retries or not _is_transient_llm_connection_error(error):
+                raise
+            delay_ms = _graph_llm_retry_delay_ms(base_ms, attempt + 1)
+            print(
+                f"WARNING: Graph LLM connection error, retrying in {delay_ms / 1000:.1f}s "
+                f"(attempt {attempt + 1}/{retries}): {error}",
+                file=sys.stderr,
+                flush=True,
+            )
+            await sleep_fn(delay_ms / 1000)
+    raise RuntimeError("Graph LLM connection retry exhausted")
+
+
+def sort_chunk_files(files: list[str]) -> list[str]:
+    def chunk_index(name: str) -> int:
+        stem = os.path.splitext(name)[0]
+        try:
+            return int(stem.rsplit("_", 1)[1])
+        except (IndexError, ValueError):
+            return sys.maxsize
+
+    chunk_files = [f for f in files if f.startswith("chunk_") and f.endswith(".md")]
+    return sorted(chunk_files, key=lambda f: (chunk_index(f), f))
+
+
+def build_lightrag_source_name(doc_id: str, chunk_filename: str) -> str:
+    """Return a stable document-unique basename for LightRAG deduplication.
+
+    LightRAG 1.5.4 strips directories from ``file_paths`` before checking for
+    duplicates, so passing physical paths makes every document's ``chunk_000.md``
+    collide. The application document ID is already a validated UUID-like value;
+    keep the chunk filename for diagnostics while making the basename unique.
+    """
+    return f"{doc_id}__{os.path.basename(chunk_filename)}"
+
+
+# NOTE: the old `indexing_lock` context manager (a non-exclusive .indexing.lock
+# marker file) was REMOVED. It has been superseded by the per-user cross-process
+# mutation lock (workers/python/rag_mutation_lock.py), which uses real OS-level
+# directory-creation atomicity, owner tokens, heartbeats, and PID/start-identity
+# stale recovery. Do NOT reintroduce a marker-file "lock" — it cannot provide
+# mutual exclusion and allowed concurrent writers to corrupt the shared
+# workspace. See docs/rag-knowledge-graph-data-integrity-remediation.md.
+
+
+async def insert_chunks(rag, chunk_records: list[dict], batch_size: int = 20, force_serial: bool = False, on_progress=None) -> int:
+    """Insert chunks with bounded bulk calls, falling back only for unsupported APIs.
+
+    When force_serial is True, inserts one chunk at a time. Otherwise (the
+    default for BOTH basic AND graph modes now), submits chunks in batches of
+    `batch_size` to `rag.ainsert(contents_list, ids=list, file_paths=list)`,
+    letting LightRAG parallelize entity/relation extraction across the batch.
+    On TypeError (older LightRAG without list-ainsert support) the batch is
+    re-tried serially so the insert still completes.
+    """
+    if force_serial:
+        indexed = 0
+        for item in chunk_records:
+            await rag.ainsert(item["content"], ids=item["id"], file_paths=item["path"])
+            indexed += 1
+            if on_progress:
+                on_progress(indexed, len(chunk_records))
+        return indexed
+
+    indexed = 0
+    for i in range(0, len(chunk_records), batch_size):
+        batch = chunk_records[i:i + batch_size]
+        contents = [item["content"] for item in batch]
+        ids = [item["id"] for item in batch]
+        paths = [item["path"] for item in batch]
+        try:
+            await rag.ainsert(contents, ids=ids, file_paths=paths)
+            indexed += len(batch)
+            if on_progress:
+                on_progress(indexed, len(chunk_records))
+        except TypeError:
+            # Older LightRAG versions don't accept a list of strings as the
+            # first arg — fall back to serial within this batch.
+            for item in batch:
+                await rag.ainsert(item["content"], ids=item["id"], file_paths=item["path"])
+                indexed += 1
+                if on_progress:
+                    on_progress(indexed, len(chunk_records))
+    return indexed
+
+
+def load_cached_embeddings(file_path: str):
+    """Load pre-computed embeddings from a binary file.
+
+    File format:
+      [num_embeddings: int32 LE][embed_dim: int32 LE][flat float32 LE array]
+
+    Returns (embeddings: list[list[float]], embed_dim: int).
+    """
+    with open(file_path, "rb") as f:
+        num = struct.unpack("<i", f.read(4))[0]
+        dim = struct.unpack("<i", f.read(4))[0]
+        data = f.read()
+    floats = struct.unpack(f"<{num * dim}f", data)
+    embeddings = []
+    for i in range(num):
+        embeddings.append(list(floats[i * dim : (i + 1) * dim]))
+    return embeddings, dim
+
+
+async def index_document(
+    doc_id: str,
+    user_id: str,
+    chunks_dir: str,
+    index_mode: str = "basic",
+    embed_api_base: str = "",
+    embed_api_key: str = "",
+    embed_model: str = "",
+    embed_dim: int = 0,
+    llm_api_base: str = "",
+    llm_api_key: str = "",
+    llm_model: str = "",
+    embeddings_file: str = "",
+    rerank_api_base: str = "",
+    rerank_api_key: str = "",
+    rerank_model: str = "",
+    task_id: str = "",
+) -> dict:
+    """Index chunk files into LightRAG.
+
+    In 'basic' mode: chunk storage + embedding only (fast, no LLM needed).
+    In 'graph' mode: also runs entity/relation extraction to build a knowledge graph.
+
+    When embeddings_file is provided, cached embeddings are used and no
+    embedding API calls are made.
+    """
+    working_dir = resolve_user_rag_dir(user_id)
+    os.makedirs(working_dir, exist_ok=True)
+    emit_progress("initializing", 10, "Preparing graph workspace" if index_mode == "graph" else "Preparing RAG workspace")
+
+    kv_storage, vector_storage, graph_storage, doc_status_storage, storage_kwargs = load_storage_config()
+
+    # Load pre-computed embeddings when available
+    cached_embeddings = None
+    embedding_iter = None
+    if embeddings_file and os.path.exists(embeddings_file):
+        cached_embeddings, probed_dim = load_cached_embeddings(embeddings_file)
+        embed_dim = embed_dim if embed_dim > 0 else probed_dim
+        embedding_iter = iter(cached_embeddings)
+        print(f"Loaded {len(cached_embeddings)} cached embeddings dim={embed_dim} from {embeddings_file}", file=sys.stderr)
+        emit_progress("loading", 20, "Loaded cached embeddings", total=len(cached_embeddings))
+
+    # Auto-probe embedding dimension if not already known
+    if not embed_dim or embed_dim <= 0:
+        raise ValueError(
+            "Cannot determine embedding dimension. "
+            "Ensure --embed-dim is provided or an embeddings.bin cache file exists."
+        )
+
+    # embedding_func: use cached embeddings when available, otherwise call API
+    if embedding_iter is not None:
+
+        async def embedding_func(texts: list[str], **kwargs):
+            result = []
+            for _ in texts:
+                emb = next(embedding_iter, None)
+                if emb is not None:
+                    result.append(emb)
+                else:
+                    result.append([0.0] * embed_dim)
+            import numpy as np
+            return np.array(result, dtype=np.float32)
+    else:
+
+        async def embedding_func(texts: list[str], **kwargs):
+            # IMPORTANT: openai_embed is decorated with @wrap_embedding_func_with_attrs
+            # which has hardcoded embedding_dim=1536. Calling it directly causes our
+            # outer EmbeddingFunc(embedding_dim=embed_dim) to clash with that 1536
+            # default — LightRAG ends up validating result vectors against 1536 even
+            # though the model returns 2048 (text-embedding-v4) or 2560 (qwen3-vl).
+            # We must invoke the unwrapped function via `.func` to bypass the inner
+            # decorator. See lightrag/utils.py:1115 docstring on double decoration.
+            unwrapped = getattr(openai_embed, "func", openai_embed)
+            result = await unwrapped(
+                texts,
+                model=embed_model,
+                base_url=embed_api_base,
+                api_key=embed_api_key,
+                **kwargs,
+            )
+            import numpy as np
+            if isinstance(result, list) and len(result) > 0:
+                return np.array([list(v) if hasattr(v, '__iter__') and not isinstance(v, list) else v for v in result], dtype=np.float32)
+            return result
+
+    entity_stats: dict = {}
+
+    # `hashing_kv` and `openai_client_configs` are LightRAG internals we don't
+    # forward. `token_tracker` is dropped from inbound kwargs because we always
+    # inject our own StdoutTokenTracker below — see Fix C in
+    # docs/codebase-optimization-roadmap-2026-06-02.md for context.
+    _ignored_llm_kwargs = {"hashing_kv", "openai_client_configs", "token_tracker"}
+    graph_token_tracker = StdoutTokenTracker(module="graph")
+
+    if index_mode == "graph" and llm_api_base and llm_model:
+        # The raw LLM call (no concurrency control here — that's delegated to
+        # the adaptive limiter via wrap_llm_func below). Concurrency is now
+        # self-tuning: the limiter slow-starts to probe the provider's true
+        # capacity and paces every extraction round-trip against it, replacing
+        # the old hardcoded Semaphore(2). See adaptive_limiter.py + the design
+        # doc docs/llm-concurrency-adaptive-limiter-2026-06-26.md.
+        async def raw_llm_func(
+            prompt: str,
+            system_prompt: str | None = None,
+            history_messages: list | None = None,
+            **kwargs,
+        ) -> str:
+            if history_messages is None:
+                history_messages = []
+            # Output language is now controlled via addon_params["language"]
+            # (set above to follow the source text), so we do NOT re-inject a
+            # competing language instruction here — that would duplicate and
+            # potentially contradict the prompt template's own {language} slot.
+            # We keep only the description-quality constraint, which the prompt
+            # template does not cover.
+            quality_instruction = "\n\nIMPORTANT: Entity and relationship descriptions MUST be concise summaries (1-2 sentences). DO NOT output step-by-step processes, raw chunk text, or 'phase1 phase2' style content."
+            if system_prompt:
+                system_prompt += quality_instruction
+            else:
+                prompt += quality_instruction
+            clean_kwargs = {k: v for k, v in kwargs.items() if k not in _ignored_llm_kwargs}
+
+            async def call_openai():
+                return await openai_complete_if_cache(
+                    model=llm_model,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    history_messages=history_messages,
+                    base_url=llm_api_base,
+                    api_key=llm_api_key,
+                    token_tracker=graph_token_tracker,
+                    **clean_kwargs,
+                )
+
+            try:
+                return await _call_graph_llm_with_connection_retry(call_openai)
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "response_format" in err_msg or "invalid_request" in err_msg:
+                    for bad_key in ("response_format", "keyword_extraction"):
+                        clean_kwargs.pop(bad_key, None)
+                    return await _call_graph_llm_with_connection_retry(call_openai)
+                raise
+
+        # Per-provider limiter key. Must match the Node-side key format
+        # (openai_compatible:<normalized_url>) so both processes share a single
+        # AIMD budget record in provider-capacity.json. Without this alignment,
+        # graph extraction and interactive requests (brainstorm/wiki/chat) each
+        # probe the provider independently and double-count load, causing 429s
+        # and unresponsiveness during indexing.
+        from rag_common import normalize_api_base
+        provider_key = f"openai_compatible:{normalize_api_base(llm_api_base)}"
+        llm_func = wrap_llm_func(raw_llm_func, provider_key)
+    else:
+        async def llm_func(*args, **kwargs) -> str:
+            return ""
+
+    rerank_fn = build_rerank_func(rerank_api_base, rerank_api_key, rerank_model)
+    rerank_kwargs = {"rerank_model_func": rerank_fn} if rerank_fn else {}
+
+    # NOTE: fix_corrupted_json_files + integrity scan moved INSIDE
+    # indexing_lock below. Running it unlocked here races the read side
+    # (rag_query.py) which may be loading the same files — the scan mutates
+    # the filesystem (deletes/resets corrupt files) and can truncate a file
+    # the writer is about to use, or one the reader is loading. Inside the
+    # lock, the read side never repairs (it reuses a cached snapshot), so
+    # the two sides no longer contend on file repair.
+
+    try:
+        import time
+        max_retries = 5
+        rag = None
+        for attempt in range(max_retries):
+            try:
+                rag = LightRAG(
+                    working_dir=working_dir,
+                    llm_model_func=llm_func,
+                    embedding_func=EmbeddingFunc(
+                        embedding_dim=embed_dim,
+                        max_token_size=8192,
+                        func=embedding_func,
+                        send_dimensions=True,
+                    ),
+                    kv_storage=kv_storage,
+                    vector_storage=vector_storage,
+                    graph_storage=graph_storage,
+                    doc_status_storage=doc_status_storage,
+                    addon_params={
+                        # IMPORTANT: entity type strings MUST NOT contain "/", "\",
+                        # or any of ["'", "(", ")", "<", ">", "|"] — LightRAG's
+                        # _handle_single_entity_extraction rejects any extracted
+                        # entity whose type contains these chars (drops it silently).
+                        # The previous "Technology/技术" bilingual form caused EVERY
+                        # entity to be discarded as "invalid entity type", losing
+                        # precision while still paying the LLM cost. Use plain
+                        # English type names; the extraction prompt instructs the
+                        # model to emit entity *names/descriptions* in the source
+                        # language, so bilingual coverage is preserved at the value
+                        # level without breaking type validation.
+                        "entity_types": [
+                            "Technology", "Framework", "Architecture", "Protocol",
+                            "Pattern", "Concept", "Algorithm", "Component",
+                            "Service", "Platform", "Module", "Interface",
+                            "Strategy", "Mechanism", "Pipeline", "Workflow",
+                            "Organization", "Person", "Location", "Document",
+                        ],
+                        # Output language: follow the SOURCE text language instead of
+                        # forcing English. Forcing English on a Chinese document both
+                        # degrades precision (entity names get lossy-translated, so
+                        # later Chinese queries fail to recall them) and slows the
+                        # model (extra translation reasoning per entity). Setting this
+                        # to an instruction string (rather than a fixed language name)
+                        # makes LightRAG's "{language}" prompt slot read naturally:
+                        # "...output must be written in `the same language as the
+                        # input text`". This is a plain string substitution, so any
+                        # phrasing works; proper nouns are still kept in their
+                        # original form per the prompt's own rule.
+                        "language": "the same language as the input text",
+                    },
+                    # LightRAG defaults llm_model_max_async to 4, which caps the
+                    # chunk-level entity-extraction concurrency AND the entity/
+                    # relation merge phase (which uses 2× this value). We set it
+                    # to 4× the limiter cap (default 64) so the Semaphore is a
+                    # pure safety rail — the adaptive limiter (AIMD, dynamic
+                    # 2..16 based on provider budget) is the sole bottleneck.
+                    # This lets the limiter probe upward freely, discovering the
+                    # provider's true capacity instead of being gated by a
+                    # static Semaphore. See _get_llm_max_async.
+                    llm_model_max_async=_get_llm_max_async(),
+                    **storage_kwargs,
+                    **rerank_kwargs,
+                )
+                break
+            except Exception as e:
+                if "no element found" in str(e) and attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                raise
+    except Exception as e:
+        err = str(e)
+        # Embedding dimension mismatch is a configuration incompatibility, NOT
+        # permission to wipe the shared per-user RAG workspace. The old code
+        # did shutil.rmtree(working_dir) here, destroying ALL documents' data
+        # for this user — not just the one being indexed. A single document's
+        # embedding config error must never gain the power to reset the entire
+        # user workspace. Fail closed: surface a stable error so the operator
+        # can explicitly reset/rebuild via the knowledge-base reset flow.
+        #
+        # IMPORTANT: the old code matched the broad substring "expected:" which
+        # matched unrelated errors (e.g. "expected: 2 arguments but got 1").
+        # Now we only match explicit embedding/dimension mismatch phrases.
+        err_lower = err.lower()
+        is_embedding_mismatch = (
+            "embedding dim mismatch" in err_lower
+            or ("dimension" in err_lower and "mismatch" in err_lower)
+            or ("expected:" in err_lower and "dimension" in err_lower)
+        )
+        if is_embedding_mismatch:
+            return {
+                "error": err,
+                "status": "failed",
+                "code": "EMBEDDING_DIMENSION_MISMATCH",
+                "requires_reset": True,
+                "message": (
+                    "Embedding dimension mismatch detected. The existing knowledge "
+                    "base was built with a different embedding dimension. Use the "
+                    "knowledge-base reset action to rebuild all documents, then retry."
+                ),
+            }
+        raise
+
+    # Acquire the per-user cross-process mutation lock. This serializes ALL
+    # writes to the shared LightRAG workspace (basic+graph index, delete,
+    # entity CRUD) so no two processes can race on the same JSON/VDB/GraphML
+    # files. The lock lives outside the user RAG directory and uses a real
+    # OS-level directory-creation primitive (not the old .indexing.lock marker).
+    operation_label = "graph-index" if index_mode == "graph" else "basic-index"
+    async with user_rag_mutation_lock(
+        user_id, operation=operation_label, task_id=task_id, document_id=doc_id,
+    ) as _lease:
+        # NOTE: The previous fix_corrupted_json_files + manual JSON validation
+        # loop was REMOVED because it raced concurrent rag_embed_index workers
+        # writing to the same storage files for OTHER documents. A JSON file
+        # caught mid-write (partial flush) was incorrectly judged "corrupted"
+        # and reset to empty {}, destroying ALL documents' data — not just
+        # the one being indexed. LightRAG's atomic writes (safe_json_dump)
+        # already provide crash-safety; no routine repair is needed.
+
+        await rag.initialize_storages()
+        emit_progress("storage", 25, "Initialized graph storage")
+
+        # For large workspaces (2000+ entities), loading the GraphML + vector
+        # store can take minutes. Emit a heartbeat here so the Node-side
+        # scanner doesn't falsely kill the task during this I/O-bound phase.
+        emit_progress("storage", 26, "Graph storage loaded, preparing extraction")
+
+        if index_mode == "graph":
+            # Source-aware purge of this document's previous LightRAG
+            # contributions. The old code did a manual batch delete of
+            # doc_status/full_docs/text_chunks/chunks_vdb using the WRONG ID
+            # level (LightRAG document IDs instead of internal chunk IDs),
+            # then called adelete_by_doc_id(parentId) which returned not_found
+            # because doc_status was already deleted. This left stale graph
+            # data and could corrupt shared entity/relation source tracking.
+            #
+            # The adapter (lightrag_adapter.purge_application_document) does it
+            # right: collects real internal chunk IDs from each child's
+            # chunks_list, aggregates graph metadata, and calls LightRAG's
+            # private _purge_doc_chunks_and_kg ONCE for source-aware cleanup.
+            from lightrag_adapter import purge_application_document, PurgeError
+            print(f"Purging previous RAG contributions for document {doc_id}...", file=sys.stderr)
+            emit_progress("cleanup", 28, "Cleaning previous document index")
+            try:
+                purge_result = await purge_application_document(
+                    rag, doc_id, operation_id=task_id or "",
+                )
+                if purge_result.child_doc_ids:
+                    print(
+                        f"Purge complete: removed {len(purge_result.child_doc_ids)} child docs, "
+                        f"{len(purge_result.chunk_ids)} chunks, "
+                        f"{purge_result.affected_entities} entities, "
+                        f"{purge_result.affected_relations} relations.",
+                        file=sys.stderr,
+                    )
+                    emit_progress(
+                        "cleanup", 33,
+                        f"Cleaned previous document index ({len(purge_result.chunk_ids)} chunks)",
+                    )
+                else:
+                    print("No existing chunks to clean (fresh document).", file=sys.stderr)
+            except PurgeError as purge_err:
+                # Purge failure is FATAL — do NOT continue to reinsert. The
+                # workspace may be inconsistent; the user must reset/rebuild.
+                return {
+                    "status": "failed",
+                    "code": purge_err.code,
+                    "error": purge_err.message,
+                    "requires_reset": True,
+                    "doc_id": doc_id,
+                    "message": (
+                        f"Failed to purge previous document data: {purge_err.message} "
+                        f"Use the knowledge-base reset action to rebuild."
+                    ),
+                }
+
+        chunk_files = sort_chunk_files(os.listdir(chunks_dir))
+        if not chunk_files:
+            return {"status": "skipped", "reason": "no chunks found", "doc_id": doc_id}
+        emit_progress("loading_chunks", 35, "Loaded document chunks", total=len(chunk_files))
+
+        chunk_records = []
+        for f in chunk_files:
+            chunk_path = os.path.join(chunks_dir, f)
+            with open(chunk_path, "r", encoding="utf-8") as fp:
+                content = fp.read()
+            chunk_records.append({
+                "content": content,
+                "id": f"{doc_id}/{f.replace('.md', '')}",
+                "path": build_lightrag_source_name(doc_id, f),
+            })
+
+        batch_size = get_insert_batch_size(index_mode)
+        indexing_message = "Extracting entities and relationships" if index_mode == "graph" else "Indexing chunks"
+        emit_progress("indexing", 40, indexing_message, processed=0, total=len(chunk_records))
+
+        # Shared progress state read by BOTH the batch-completion callback and
+        # the time-driven heartbeat task below. The batch callback updates it
+        # when a batch finishes; the heartbeat reads it to emit a fresh
+        # lastHeartbeatAt even while a single slow LLM call is in flight (which
+        # otherwise freezes progress for minutes → triggers the Node-side
+        # heartbeat-stall detector in queue.ts).
+        progress_state = {"done": 0, "total": len(chunk_records)}
+
+        def _report_index_progress(done, total):
+            progress_state["done"] = done
+            progress_state["total"] = total
+            progress = 40 + int((done / max(total, 1)) * 50)
+            emit_progress("indexing", progress, indexing_message, processed=done, total=total)
+
+        # Time-driven heartbeat: emit a progress event every N seconds even if
+        # no batch has completed. This guarantees lastHeartbeatAt stays fresh
+        # during slow LLM extraction (a single hung provider call used to freeze
+        # the heartbeat for 15+ min, well past the 5-min stall threshold). The
+        # task self-cancels when insert_chunks returns.
+        heartbeat_interval_s = _read_positive_int("GRAPH_HEARTBEAT_INTERVAL_S", 15)
+        heartbeat_task: Optional[asyncio.Task] = None
+        if heartbeat_interval_s > 0:
+            heartbeat_task = asyncio.create_task(
+                _heartbeat_loop(progress_state, heartbeat_interval_s, indexing_message)
+            )
+
+        try:
+            force_serial = index_mode == "graph" and not should_bulk_insert_graph()
+            submitted = await insert_chunks(rag, chunk_records, batch_size=batch_size, force_serial=force_serial, on_progress=_report_index_progress)
+        finally:
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await heartbeat_task
+
+        from lightrag_adapter import verify_application_document_insert
+        expected_child_ids = [record["id"] for record in chunk_records]
+        verification = await verify_application_document_insert(
+            rag, doc_id, expected_child_ids,
+        )
+        committed = len(verification.committed_child_ids)
+        emit_progress("indexing", 90, "Finished chunk indexing", processed=committed, total=len(chunk_records))
+
+    # The user mutation lock has been released (the async with block exited).
+    # Invalidate the read-side cache so the next query rebuilds with the
+    # freshly-written data. During indexing, queries reused the old cached
+    # snapshot (fast, no rebuild); now that the write is committed, we want
+    # subsequent queries to see the new entities/relations.
+    #
+    # Best-effort: in the daemon process this drops the resident LightRAG
+    # instance so the next query reloads. In a spawn (one-shot) process
+    # there is no shared cache to invalidate — the call is a harmless no-op.
+    try:
+        import rag_query
+        rag_query._invalidate_rag_cache(working_dir)
+    except Exception:
+        pass
+
+    if index_mode == "graph" and llm_api_base and llm_model:
+        try:
+            emit_progress("finalizing", 94, "Collecting graph labels")
+            labels = await rag.get_graph_labels()
+            entity_stats = {
+                "graph_entities": len(labels),
+                "index_mode": "graph",
+            }
+        except Exception:
+            entity_stats = {
+                "graph_entities": 0,
+                "index_mode": "graph",
+                "graph_note": "graph labels unavailable (storage backend may not support it)",
+            }
+    else:
+        entity_stats = {"index_mode": "basic"}
+
+    return {
+        "status": "indexed",
+        "doc_id": doc_id,
+        "chunks": committed,
+        "submitted_chunks": submitted,
+        "committed_chunks": committed,
+        "expected_chunks": len(chunk_records),
+        "storage": {
+            "kv": kv_storage,
+            "vector": vector_storage,
+            "graph": graph_storage,
+        },
+        **entity_stats,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="LightRAG document indexer")
+    parser.add_argument("--doc-id", required=True)
+    parser.add_argument("--user-id", required=True)
+    parser.add_argument("--chunks-dir", required=True)
+    parser.add_argument("--index-mode", choices=["basic", "graph"], default="basic")
+    parser.add_argument("--embeddings-file", default="",
+                        help="Path to pre-computed embeddings binary file (skips embedding API)")
+    parser.add_argument("--embed-api-base", default="")
+    parser.add_argument("--embed-api-key", default=os.environ.get("RAG_EMBED_API_KEY", ""),
+                        help="Embedding API key (prefer RAG_EMBED_API_KEY env var)")
+    parser.add_argument("--embed-model", default="")
+    parser.add_argument("--embed-dim", type=int, default=0,
+                        help="Embedding vector dimension (0=auto-detect from model name)")
+    parser.add_argument("--llm-api-base", default="")
+    parser.add_argument("--llm-api-key", default=os.environ.get("RAG_LLM_API_KEY", ""),
+                        help="LLM API key (prefer RAG_LLM_API_KEY env var)")
+    parser.add_argument("--llm-model", default="")
+    parser.add_argument("--rerank-api-base", default="")
+    parser.add_argument("--rerank-api-key", default=os.environ.get("RAG_RERANK_API_KEY", ""),
+                        help="Rerank API key (prefer RAG_RERANK_API_KEY env var)")
+    parser.add_argument("--rerank-model", default="")
+    args = parser.parse_args()
+
+    result = asyncio.run(
+        index_document(
+            doc_id=args.doc_id,
+            user_id=args.user_id,
+            chunks_dir=args.chunks_dir,
+            index_mode=args.index_mode,
+            embed_api_base=args.embed_api_base,
+            embed_api_key=args.embed_api_key,
+            embed_model=args.embed_model,
+            embed_dim=args.embed_dim,
+            llm_api_base=args.llm_api_base,
+            llm_api_key=args.llm_api_key,
+            llm_model=args.llm_model,
+            embeddings_file=args.embeddings_file,
+            rerank_api_base=args.rerank_api_base,
+            rerank_api_key=args.rerank_api_key,
+            rerank_model=args.rerank_model,
+        )
+    )
+    print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

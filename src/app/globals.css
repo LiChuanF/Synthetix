@@ -1,0 +1,326 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ============================================
+   Synthetix Design System v2.1 — Modern AI Workspace
+   ============================================ */
+
+@theme inline {
+  --color-primary: var(--primary);
+  --color-primary-light: #8B5CF6;
+  --color-primary-dark: #6D28D9;
+  --color-primary-50: #F5F3FF;
+  --color-primary-100: #EDE9FE;
+  --color-primary-200: #DDD6FE;
+  --color-primary-300: #C4B5FD;
+  --color-primary-400: #A78BFA;
+  --color-primary-500: #8B5CF6;
+  --color-primary-600: #7C3AED;
+  --color-primary-700: #6D28D9;
+  --color-primary-800: #5B21B6;
+  --color-primary-900: #4C1D95;
+
+  --color-accent: var(--accent);
+  --color-accent-light: #FB923C;
+  --color-accent-dark: #C2410C;
+
+  --color-base: var(--background);
+  --color-base-white: var(--card);
+  --color-base-gray: var(--secondary);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-display: "Plus Jakarta Sans", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-heading: var(--font-display);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-3xl: 24px;
+}
+
+@layer base {
+  :root {
+    --background: #F8FAFC;
+    --foreground: #0F172A;
+    --card: #FFFFFF;
+    --card-foreground: #0F172A;
+    --popover: #FFFFFF;
+    --popover-foreground: #0F172A;
+    --primary: #7C3AED;
+    --primary-foreground: #FFFFFF;
+    --secondary: #F1F5F9;
+    --secondary-foreground: #0F172A;
+    --muted: #F1F5F9;
+    --muted-foreground: #64748B;
+    --accent: #F97316;
+    --accent-foreground: #FFFFFF;
+    --destructive: #EF4444;
+    --destructive-foreground: #FFFFFF;
+    --border: #E2E8F0;
+    --input: #E2E8F0;
+    --ring: #7C3AED;
+    --radius: 0.75rem;
+    --chart-1: #7C3AED;
+    --chart-2: #F97316;
+    --chart-3: #10B981;
+    --chart-4: #F59E0B;
+    --chart-5: #3B82F6;
+    --sidebar: #FFFFFF;
+    --sidebar-foreground: #0F172A;
+    --sidebar-primary: #7C3AED;
+    --sidebar-primary-foreground: #FFFFFF;
+    --sidebar-accent: #F1F5F9;
+    --sidebar-accent-foreground: #0F172A;
+    --sidebar-border: #E2E8F0;
+    --sidebar-ring: #7C3AED;
+  }
+
+  .dark {
+    --background: #0B0F19;
+    --foreground: #F8FAFC;
+    --card: #111827;
+    --card-foreground: #F8FAFC;
+    --popover: #111827;
+    --popover-foreground: #F8FAFC;
+    --primary: #8B5CF6;
+    --primary-foreground: #FFFFFF;
+    --secondary: #1E293B;
+    --secondary-foreground: #F8FAFC;
+    --muted: #1E293B;
+    --muted-foreground: #A1ADC0;
+    --accent: #FB923C;
+    --accent-foreground: #111827;
+    --destructive: #F87171;
+    --destructive-foreground: #111827;
+    --border: rgba(148, 163, 184, 0.16);
+    --input: rgba(148, 163, 184, 0.18);
+    --ring: #8B5CF6;
+    --radius: 0.75rem;
+    --chart-1: #8B5CF6;
+    --chart-2: #FB923C;
+    --chart-3: #34D399;
+    --chart-4: #FBBF24;
+    --chart-5: #60A5FA;
+    --sidebar: #0D1220;
+    --sidebar-foreground: #F8FAFC;
+    --sidebar-primary: #8B5CF6;
+    --sidebar-primary-foreground: #FFFFFF;
+    --sidebar-accent: #151C2B;
+    --sidebar-accent-foreground: #F8FAFC;
+    --sidebar-border: rgba(148, 163, 184, 0.14);
+    --sidebar-ring: #8B5CF6;
+  }
+
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  html {
+    @apply font-sans antialiased;
+  }
+}
+
+/* Custom Styles */
+.glass-card {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+}
+
+.shadow-soft {
+  box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.03);
+}
+
+.shadow-hover {
+  box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.08);
+}
+
+.bg-mesh {
+  background-color: var(--color-base-white);
+  background-image: radial-gradient(at 0% 0%, hsla(253,16%,7%,0.03) 0, transparent 50%), 
+                    radial-gradient(at 50% 0%, hsla(225,39%,30%,0.03) 0, transparent 50%), 
+                    radial-gradient(at 100% 0%, hsla(339,49%,30%,0.03) 0, transparent 50%);
+}
+
+/* Dark mode overrides for custom classes */
+.dark .glass-card {
+  background: rgba(17, 24, 39, 0.72);
+  border-color: rgba(148, 163, 184, 0.16);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 24px 60px -32px rgba(0, 0, 0, 0.8);
+}
+
+.dark .shadow-soft {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 12px 32px -16px rgba(0, 0, 0, 0.7);
+}
+
+.dark .shadow-hover {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.05) inset,
+    0 20px 48px -20px rgba(0, 0, 0, 0.85);
+}
+
+.dark .bg-mesh {
+  background-color: #0B0F19;
+  background-image:
+    radial-gradient(at 20% 20%, rgba(139, 92, 246, 0.08) 0px, transparent 45%),
+    radial-gradient(at 80% 80%, rgba(251, 146, 60, 0.04) 0px, transparent 45%);
+}
+
+/* Animations */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-12px); }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.animate-fade-in-up { animation: fadeInUp 0.5s ease both; }
+.animate-fade-in-up-1 { animation: fadeInUp 0.5s ease both 0.05s; }
+.animate-fade-in-up-2 { animation: fadeInUp 0.5s ease both 0.1s; }
+.animate-fade-in-up-3 { animation: fadeInUp 0.5s ease both 0.15s; }
+.animate-fade-in-up-4 { animation: fadeInUp 0.5s ease both 0.2s; }
+.animate-fade-in-up-5 { animation: fadeInUp 0.5s ease both 0.25s; }
+.animate-fade-in-up-6 { animation: fadeInUp 0.5s ease both 0.3s; }
+
+.animate-float { animation: float 8s ease-in-out infinite; }
+.animate-float-delayed { animation: float 10s ease-in-out infinite 2s; }
+.animate-task-pulse { animation: pulse-dot 2s infinite; }
+
+/* Topology animations */
+
+@keyframes loading-bar {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(150%); }
+  100% { transform: translateX(-100%); }
+}
+
+.animate-loading-bar { animation: loading-bar 1.2s ease-in-out infinite; }
+
+@keyframes shimmer-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+@keyframes progress-indeterminate {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
+
+/* Processing Pipeline — "always in motion" feedback.
+   These never freeze on a number; they communicate that work is
+   continuously flowing toward the next stage. */
+
+/* Slow, soft ping ring used on the active pipeline dot and the
+   header status pill — gentler than Tailwind's default animate-ping. */
+@keyframes ping-slow {
+  0% { transform: scale(1); opacity: 0.6; }
+  70%, 100% { transform: scale(2.4); opacity: 0; }
+}
+.animate-ping-slow { animation: ping-slow 1.6s cubic-bezier(0, 0, 0.2, 1) infinite; }
+
+/* Three-dot bounce under the active stage label. */
+@keyframes bounce-dot {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-3px); opacity: 1; }
+}
+.animate-bounce-dot { animation: bounce-dot 1.2s ease-in-out infinite; }
+
+/* The inner white core of the active dot. */
+@keyframes core-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.7); }
+}
+.animate-pulse-dot { animation: core-pulse 1s ease-in-out infinite; }
+
+/* Flowing sheen across the connector leading into the active stage.
+   A bright gradient sweeps left→right forever, reading as data
+   travelling down the pipe. */
+@keyframes pipeline-flow {
+  0% { background-position: -120px 0; }
+  100% { background-position: 120px 0; }
+}
+.pipeline-flow {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(249, 115, 22, 0) 20%,
+    rgba(249, 115, 22, 0.9) 50%,
+    rgba(249, 115, 22, 0) 80%,
+    transparent 100%
+  );
+  background-size: 120px 100%;
+  background-repeat: no-repeat;
+  animation: pipeline-flow 1.4s linear infinite;
+}
+
+/* A small pill that a bright nub sweeps across forever — used under an active
+   pipeline stage label as a perpetually-moving "alive" indicator (chosen over
+   a percentage, which reads as frozen when the underlying LLM calls stall). */
+@keyframes segment-shimmer {
+  0% { transform: translateX(-12px); }
+  100% { transform: translateX(28px); }
+}
+.animate-segment-shimmer { animation: segment-shimmer 1.2s ease-in-out infinite; }
+
+/* ── Electron title bar drag region ──────────────────────────────────────────
+   With titleBarStyle: "hidden" + titleBarOverlay, the top ~40px of the window
+   must be marked draggable so the user can move the window by dragging the
+   header area. Interactive elements inside it opt back out with no-drag. */
+.app-drag { -webkit-app-region: drag; }
+.app-no-drag { -webkit-app-region: no-drag; }
+

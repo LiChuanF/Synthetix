@@ -1,0 +1,42 @@
+# Windows-side build artifacts — the image rebuilds these for Linux.
+node_modules
+.next
+dist
+.venv
+synthetix-data
+data
+tmp
+.tmp-lr
+
+# VCS / CI / editor
+.git
+.github
+.vscode
+.claude
+.worktrees
+
+# Dev-only trees
+e2e
+prototype
+docs
+coverage
+test-results
+playwright-report
+
+# Secrets: the runtime image gets them from deploy/synthetix.env
+.env
+.env.*
+deploy/synthetix.env
+
+# Offline assets we do NOT ship into the image (Windows wheels, scratch dirs)
+offline/wheelhouse
+offline/venv-test
+offline/gte-download
+offline/dl_resume.py
+offline/*.zip
+offline/*.tar.gz
+
+# Misc
+*.vsix
+*.log
+*.md

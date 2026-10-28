@@ -1,0 +1,530 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id            String   @id @default(uuid())
+  username      String   @unique
+  email         String?  @unique
+  passwordHash  String   @map("password_hash")
+  displayName   String   @map("display_name") @default("")
+  avatarUrl     String?  @map("avatar_url")
+  role          String   @default("admin")
+  isFirstLogin  Boolean  @default(true) @map("is_first_login")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  providers   ModelProvider[]
+  tasks       AsyncTask[]
+  tokenUsage  TokenUsage[]
+  documents   Document[]
+  sessions    BrainstormSession[]
+  drafts      Draft[]
+  wikiEntries WikiEntry[]
+  apiKeys     ApiKey[]
+  @@map("users")
+}
+
+/// API 访问密钥,供外部程序化客户端(如 MCP server)通过 Bearer token 鉴权。
+/// 明文密钥仅在创建时一次性返回;数据库只存 SHA-256 哈希与展示用前缀/后4位。
+/// 吊销是软删除(设置 revokedAt),保留审计记录。
+model ApiKey {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  name       String
+  hashedKey  String    @map("hashed_key")
+  keyPrefix  String    @map("key_prefix")
+  keyLast4   String    @map("key_last_4")
+  lastUsedAt DateTime? @map("last_used_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  revokedAt  DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([hashedKey])
+  @@map("api_keys")
+}
+
+model ModelProvider {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  name         String
+  providerType String   @map("provider_type")
+  apiBaseUrl   String   @map("api_base_url")
+  apiKey       String?  @map("api_key")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  models   ModelConfig[]
+
+  @@map("model_providers")
+}
+
+model ModelConfig {
+  id                String   @id @default(uuid())
+  providerId        String   @map("provider_id")
+  modelId           String   @map("model_id")
+  modelName         String   @map("model_name")
+  capabilities      String   @default("[]")
+  contextWindow     Int      @map("context_window") @default(0)
+  maxOutputTokens   Int?     @map("max_output_tokens")
+  supportsStreaming  Boolean  @default(true) @map("supports_streaming")
+  inputPrice        Float?   @map("input_price")
+  outputPrice       Float?   @map("output_price")
+  localOrCloud      String   @default("local") @map("local_or_cloud")
+  isDefaultFor      String?  @map("is_default_for")
+  embeddingDim      Int?     @map("embedding_dim")
+  embeddingBatchSize Int?    @map("embedding_batch_size") @default(10)
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  provider ModelProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  usage    TokenUsage[]
+
+  @@map("model_configs")
+}
+
+model AsyncTask {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  type         String
+  status       String   @default("pending")
+  progress     Int      @default(0)
+  inputData    String?  @map("input_data")
+  resultData   String?  @map("result_data")
+  errorMessage String?  @map("error_message")
+  documentId   String?  @map("document_id")
+  draftId      String?  @map("draft_id")
+  sectionId    String?  @map("section_id")
+  sessionId    String?  @map("session_id")
+  operationId  String?  @map("operation_id")
+  parentTaskId String?  @map("parent_task_id")
+  attempt      Int?
+  startedAt        DateTime? @map("started_at")
+  heartbeatAt      DateTime? @map("heartbeat_at")
+  cancelRequestedAt DateTime? @map("cancel_requested_at")
+  finishedAt       DateTime? @map("finished_at")
+  leaseOwner       String?  @map("lease_owner")
+  leaseExpiresAt   DateTime? @map("lease_expires_at")
+  executionGeneration Int?  @map("execution_generation")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type, createdAt])
+  @@index([userId, createdAt])
+  @@index([userId, documentId, type, createdAt])
+  @@index([userId, draftId, type, createdAt])
+  @@index([userId, sectionId, type, createdAt])
+  @@index([userId, sessionId, type, createdAt])
+  @@index([operationId])
+  @@index([parentTaskId])
+  @@index([status, heartbeatAt])
+  @@map("async_tasks")
+}
+
+model TokenUsage {
+  id            String   @id @default(uuid())
+  userId        String   @map("user_id")
+  modelConfigId String?  @map("model_config_id")
+  module        String
+  inputTokens   Int      @map("input_tokens")
+  outputTokens  Int      @map("output_tokens")
+  costEstimate  Float?   @map("cost_estimate")
+  referenceId   String?  @map("reference_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  modelConfig ModelConfig?  @relation(fields: [modelConfigId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("token_usage")
+}
+
+model Document {
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id")
+  originalName   String   @map("original_name")
+  originalFormat String   @map("original_format")
+  originalSize   Int      @map("original_size")
+  originalHash   String?  @map("original_hash")
+  originalPath   String   @map("original_path")
+  markdownPath   String?  @map("markdown_path")
+  markdownSize   Int?     @map("markdown_size")
+  status         String   @default("uploading")
+  parentId       String?  @map("parent_id")
+  tokenEstimate    Int?     @map("token_estimate")
+  wordCount        Int?     @map("word_count")
+  conversionMethod String?  @map("conversion_method")
+  conversionWarning String? @map("conversion_warning")
+  structurePath    String?  @map("structure_path")
+  imageManifestPath String? @map("image_manifest_path")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  children Document[]   @relation("DocumentSplit")
+  parent   Document?    @relation("DocumentSplit", fields: [parentId], references: [id], onDelete: Cascade)
+  chunks   DocumentChunk[]
+  atoms    DocumentAtom[]
+  segments DocumentSegment[]
+  tags     DocumentTag[]
+  images   DocumentImage[]
+
+  @@index([userId, status])
+  @@index([originalHash])
+  @@map("documents")
+}
+
+model DocumentChunk {
+  id          String   @id @default(uuid())
+  documentId  String   @map("document_id")
+  index       Int
+  title       String?
+  content     String
+  tokenCount  Int?     @map("token_count")
+  startPage   Int?     @map("start_page")
+  endPage     Int?     @map("end_page")
+  headingPath String?  @map("heading_path")
+  embedding   Bytes?   @map("embedding")
+  embedModel  String?  @map("embed_model")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@map("document_chunks")
+}
+
+/// Atomic, locatable structural unit of a document — the coordinate system for
+/// LLM-guided domain segmentation. Persisted/enriched form of AtomicSpan
+/// (src/lib/documents/outline/spans.ts). Boundaries (DocumentSegment.start/
+/// endAtomIndex) reference this index; page numbers here are display metadata,
+/// NOT the boundary truth (charStart/charEnd + atom index are authoritative).
+model DocumentAtom {
+  id           String   @id @default(uuid())
+  documentId   String   @map("document_id")
+  index        Int
+  spanId       String?  @map("span_id")        // matches AtomicSpan.id (s_0000)
+  blockType    String   @map("block_type")                // heading|paragraph|table|code|list|other|unknown
+  content      String
+  tokenCount   Int?     @map("token_count")
+  headingPath  String?  @map("heading_path")
+  headingLevel Int?     @map("heading_level")
+  pageStart    Int?     @map("page_start")      // from structure.json; PDF reliable, DOCX may be null
+  pageEnd      Int?     @map("page_end")
+  charStart    Int?     @map("char_start")      // primary boundary coord (document-type independent)
+  charEnd      Int?     @map("char_end")
+  textPreview  String?  @map("text_preview")    // first ~120 chars, for LLM window signatures
+  keywords     String?                            // JSON array of keywords, for candidate-boundary detection
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, index])
+  @@map("document_atoms")
+}
+
+/// LLM-induced domain/topic unit of a document — the primary input for Wiki
+/// synthesis and the context source for Graph contextual-prefix chunks. The
+/// title/summary are NOT a fixed taxonomy; the LLM infers them per document to
+/// stay general across languages and document types.
+model DocumentSegment {
+  id                 String   @id @default(uuid())
+  documentId         String   @map("document_id")
+  index              Int
+  title              String
+  summary            String?                            // <=300 chars; used as Graph chunk context prefix
+  startAtomIndex     Int       @map("start_atom_index")
+  endAtomIndex       Int       @map("end_atom_index")   // inclusive
+  pageStart          Int?      @map("page_start")
+  pageEnd            Int?      @map("page_end")
+  headingPath        String?   @map("heading_path")
+  tokenCount         Int?      @map("token_count")
+  contentPath        String?   @map("content_path")     // large content stored on disk; DB keeps metadata
+  sourceAtomIds      String    @default("[]") @map("source_atom_ids")     // JSON
+  sourceChunkIds     String?   @map("source_chunk_ids") // JSON; filled AFTER oversize re-split (see §7.3)
+  segmentationMethod String    @default("llm") @map("segmentation_method")          // llm|hybrid|fallback
+  segmentationReason String?   @map("segmentation_reason")
+  confidence         Float     @default(0.8)
+  contentHash        String?   @map("content_hash")     // future incremental reprocess; MVP = full rebuild
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, index])
+  @@map("document_segments")
+}
+
+model Tag {
+  id   String @id @default(uuid())
+  name String @unique
+
+  documents DocumentTag[]
+
+  @@map("tags")
+}
+
+model DocumentTag {
+  documentId String @map("document_id")
+  tagId      String @map("tag_id")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  tag      Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([documentId, tagId])
+  @@map("document_tags")
+}
+
+model BrainstormSession {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  title     String
+  status    String   @default("active")
+  outline   String?  // JSON outline
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@map("brainstorm_sessions")
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  sessionId String   @map("session_id")
+  role      String   // "user" | "ai" | "system"
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session BrainstormSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("messages")
+}
+
+model Draft {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  title       String
+  description String?
+  outline     String   // JSON outline structure
+  status      String   @default("drafting") // drafting | assembling | completed
+  sessionId   String?  @map("session_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sections Section[]
+
+  @@index([userId, status])
+  @@map("drafts")
+}
+
+model Section {
+  id              String   @id @default(uuid())
+  draftId         String   @map("draft_id")
+  parentId        String?  @map("parent_id")
+  index           Int
+  title           String
+  description     String?
+  keyPoints       String?  @map("key_points")
+  estimatedWords  Int?     @map("estimated_words")
+  status          String   @default("pending")
+  content         String?
+  summary         String?
+  wordCount       Int?     @map("word_count")
+  constraints     String?
+  contentA        String?  @map("content_a")
+  contentB        String?  @map("content_b")
+  modelA          String?  @map("model_a")
+  modelB          String?  @map("model_b")
+  selectedModel   String?  @map("selected_model")
+  ragMode           String   @default("auto") @map("rag_mode")
+  ragDocumentIds    String?  @map("rag_document_ids")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  draft    Draft     @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  parent   Section?  @relation("SectionTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children Section[] @relation("SectionTree")
+  versions SectionVersion[]
+  references SectionReference[]
+  assets     SectionAsset[]
+
+  @@index([draftId, index])
+  @@map("sections")
+}
+
+model SectionVersion {
+  id        String   @id @default(uuid())
+  sectionId String   @map("section_id")
+  version   Int
+  content   String
+  source    String   // "generated_a" | "generated_b" | "edited" | "merged"
+  modelId   String?  @map("model_id")
+  wordCount Int?     @map("word_count")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  section Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@index([sectionId, version])
+  @@map("section_versions")
+}
+
+model SectionReference {
+  id              String   @id @default(uuid())
+  sectionId       String   @map("section_id")
+  documentId      String?  @map("document_id")
+  chunkId         String?  @map("chunk_id")
+  documentName    String   @map("document_name")
+  relevanceScore  Float    @map("relevance_score")
+  sourceAnchor    String?  @map("source_anchor")
+  content         String?  @map("content")
+  images          String?
+  sourceType      String   @default("rag_chunk") @map("source_type") // rag_chunk | rag_graph
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  section Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@index([sectionId])
+  @@index([documentId])
+  @@index([sectionId, documentId])
+  @@index([sourceType])
+  @@map("section_references")
+}
+
+model SectionAsset {
+  id          String   @id @default(uuid())
+  draftId     String   @map("draft_id")
+  sectionId   String   @map("section_id")
+  type        String   // diagram | image | mermaid | svg
+  title       String
+  description String?
+  prompt      String?
+  path        String?
+  mimeType    String?  @map("mime_type")
+  width       Int?
+  height      Int?
+  status      String   @default("pending") // pending | generating | ready | failed
+  metadata    String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  section     Section  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@index([draftId])
+  @@index([sectionId])
+  @@map("section_assets")
+}
+
+model DocumentImage {
+  id          String   @id @default(uuid())
+  documentId  String   @map("document_id")
+  filename    String
+  altText     String?  @map("alt_text")
+  mimeType    String   @map("mime_type")
+  fileSize    Int      @map("file_size")
+  width       Int?
+  height      Int?
+  pageNumber  Int?     @map("page_number")
+  hash        String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@unique([documentId, filename])
+  @@map("document_images")
+}
+
+/// LLM-synthesized, human-readable knowledge entries that sit ABOVE the raw
+/// chunks and graph layers. Inspired by Karpathy's LLM-Wiki (a persistent,
+/// ever-accumulating Markdown wiki maintained by the LLM) and the OKF spec
+/// (portable Markdown + minimal frontmatter + link-as-graph).
+///
+/// Three entry types form the synthesized layer:
+///   - doc_summary: document-level abstract (one per document)
+///   - topic:       cross-cutting theme/concept group
+///   - concept:     a single defined notion
+///   - claim:       a discrete assertion with a confidence score
+///
+/// Lifecycle: created by `synthesizeDocument` (per-chunk incremental),
+/// updated by `updateWikiAfterSection` (writeback flywheel), and may be
+/// flagged `conflicting` by the `validate` pass (Phase 2).
+model WikiEntry {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  type            String // "doc_summary" | "topic" | "concept" | "claim"
+  title           String
+  /// OKF-style identity: URL-safe slug, unique per user. The "file path is
+  /// identity" principle from OKF, realized at the DB layer.
+  slug            String
+  content         String // Markdown body
+  /// JSON array of source references: [{documentId, chunkId?, entityId?}].
+  /// Lightweight JSON (not a join table) because source refs are many-to-many
+  /// and mutate frequently — mirrors the existing SectionReference.sourceType design.
+  sourceRefs      String    @default("[]") @map("source_refs")
+  confidence      Float     @default(0.8) // 0-1, LLM self-assessment or derived
+  status          String    @default("active") // active | superseded | conflicting
+  lastValidatedAt DateTime? @map("last_validated_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  links     WikiLink[]  @relation("WikiLinkFrom")
+  backlinks WikiLink[]  @relation("WikiLinkTo")
+  changeLog WikiChangeLog[]
+
+  @@unique([userId, slug])
+  @@index([userId, type])
+  @@index([userId, status])
+  @@map("wiki_entries")
+}
+
+/// Explicit typed edges between Wiki entries — the database realization of
+/// OKF's "Markdown links form the knowledge graph" principle. Enables graph
+/// traversal + visualization without re-parsing Markdown.
+model WikiLink {
+  id       String @id @default(uuid())
+  fromId   String @map("from_id")
+  toId     String @map("to_id")
+  relation String // "relates" | "supports" | "contradicts" | "derived_from"
+
+  from WikiEntry @relation("WikiLinkFrom", fields: [fromId], references: [id], onDelete: Cascade)
+  to   WikiEntry @relation("WikiLinkTo", fields: [toId], references: [id], onDelete: Cascade)
+
+  @@unique([fromId, toId, relation])
+  @@index([toId])
+  @@map("wiki_links")
+}
+
+/// Append-only change history — the machine-writable backing for the
+/// human-readable `log.md` (LLM-Wiki's schema layer). Every create / update /
+/// merge / supersede / conflict adds one row so users can audit how the
+/// knowledge base evolved over time.
+model WikiChangeLog {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  entryId   String?  @map("entry_id") // null = global event (e.g. full rebuild)
+  action    String // "create" | "update" | "merge" | "supersede" | "conflict"
+  summary   String // one human-readable line (a row in log.md)
+  detail    String? // JSON: before/after diff summary
+  createdAt DateTime @default(now()) @map("created_at")
+
+  entry WikiEntry? @relation(fields: [entryId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([entryId])
+  @@map("wiki_change_log")
+}

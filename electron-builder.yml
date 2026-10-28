@@ -1,0 +1,195 @@
+# Synthetix electron-builder config.
+#
+# Build:  node scripts/build-electron.mjs
+#
+# Key design:
+#  - The Next.js app bundle (dist/app: node.exe + CPython + .next + node_modules
+#    + workers + prisma) is shipped verbatim via extraResources → resources/app.
+#    The Electron main process spawns `next start` against it. This reuses the
+#    existing, already-validated Windows bundle with zero migration.
+#  - `files` ships ONLY the compiled Electron main/preload JS, not the app
+#    bundle (that would double-ship 1.4GB and break the resources/app layout).
+#  - perMachine: false → per-user install, no UAC (matches the prior Inno Setup
+#    policy). oneClick: false → user picks install path, like a normal app.
+#  - Windows Authenticode signing is enabled at build time through
+#    electron-builder's standard CSC_LINK / CSC_KEY_PASSWORD environment.
+#    With no certificate configured, electron-builder produces an unsigned build.
+
+appId: com.walkcloud.synthetix
+productName: Synthetix
+copyright: Copyright © 2026 Synthetix
+
+# Entry point is read from package.json "main" field — do NOT set it here
+# (electron-builder rejects an unknown "main" property in this config).
+
+directories:
+  output: dist/electron
+  buildResources: build
+
+# Ship ONLY the compiled electron main process JS + preload. The Next app bundle
+# travels via extraResources (below) so it lands at resources/app, exactly where
+# electron/paths.ts appRoot() expects it. The electron main has NO runtime deps
+# beyond Electron itself (bundled); the app's real node_modules live in
+# resources/app/node_modules (via extraResources).
+#
+# Strategy: start from NOTHING and add only what's needed. This keeps app.asar
+# tiny (~30KB main.js) instead of packing ~500MB of project deps. Using an
+# explicit allowlist is safer than trying to exclude everything.
+files:
+  # The allowlist — only these ship in app.asar:
+  - dist/electron-main/**
+  - package.json
+  # Explicitly exclude the heavy project trees that electron-builder's defaults
+  # would otherwise pull in (it auto-includes node_modules based on package.json).
+  - "!**/node_modules"
+  - "!**/node_modules/**"
+  - "!**/.next"
+  - "!**/.next/**"
+  - "!**/src"
+  - "!**/src/**"
+  - "!**/workers"
+  - "!**/workers/**"
+  - "!**/prisma"
+  - "!**/prisma/**"
+  - "!**/public"
+  - "!**/public/**"
+  - "!**/docs"
+  - "!**/docs/**"
+  - "!**/e2e"
+  - "!**/e2e/**"
+  - "!**/prototype"
+  - "!**/prototype/**"
+  - "!**/build"
+  - "!**/build/**"
+  - "!**/electron"
+  - "!**/electron/**"
+  - "!**/scripts"
+  - "!**/scripts/**"
+  - "!**/packaging"
+  - "!**/packaging/**"
+  - "!**/*.{iml,hprof,orig,csproj,sln,xs}"
+  - "!**/.*"
+
+# The full Next.js app bundle (node runtime + CPython + .next + deps + workers +
+# prisma) goes into resources/app/. Exclude the legacy .bat launchers.
+#
+# CRITICAL: the `files` section above has global excludes for node_modules/ and
+# .next/ (to keep app.asar tiny). electron-builder applies those global excludes
+# to extraResources too, which would silently strip the bundle's runtime deps.
+# We MUST explicitly re-include them here via positive filter entries that
+# override the global negatives. Without this, the packaged app crashes at
+# startup with "Cannot find module 'better-sqlite3'" / 'bindings' / etc.
+# because resources/app/node_modules/ is empty.
+extraResources:
+  - from: dist/app
+    to: app
+    filter:
+      - "**/*"
+      - "!start.bat"
+      - "!stop.bat"
+  # node_modules and .next re-included as SEPARATE extraResources entries.
+  # electron-builder applies the `files` section's global excludes
+  # (!**/node_modules/**, !**/.next/**) to extraResources filter matching,
+  # which strips them from the dist/app copy above even though the filter
+  # says "**/*". Splitting them into their own entries with explicit positive
+  # filters overrides the inherited negatives. Without this, the packaged
+  # app has empty resources/app/node_modules/ and crashes at startup with
+  # "Cannot find module 'better-sqlite3'".
+  - from: dist/app/node_modules
+    to: app/node_modules
+    filter:
+      - "**/*"
+  - from: dist/app/.next
+    to: app/.next
+    filter:
+      - "**/*"
+  # The local embedding model (GTE-multilingual-base, int8 ONNX, ~340MB) used by
+  # the chunking pipeline. data/ is otherwise runtime-only (excluded from the
+  # app bundle above), so ship the model as a dedicated resource under app/models
+  # and point LOCAL_EMBED_MODEL_PATH at it from electron/main.ts.
+  - from: data/models/gte-multilingual-base
+    to: app/models/gte-multilingual-base
+    filter:
+      - "**/*"
+  # Branded icon → resources/icon.ico. electron/main.ts trayIconPath() looks for
+  # it at process.resourcesPath/icon.ico (the first candidate). Without this,
+  # the tray/window falls back to an empty image and the taskbar icon is blank.
+  - from: build/icon.ico
+    to: icon.ico
+    filter:
+      - "**/*"
+
+# Windows target: NSIS installer, per-user, user picks install dir.
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  # Authenticode signing. The release workflow decodes WINDOWS_CERT_FILE before
+  # electron:build; scripts/build-electron.mjs maps WINDOWS_CERT_PATH and
+  # WINDOWS_CERT_PASSWORD to electron-builder's standard CSC_LINK and
+  # CSC_KEY_PASSWORD environment variables. This config stays secret-free.
+  # When unset, electron-builder skips signing (test builds / dev). SmartScreen
+  # will warn until a real EV/OV cert is configured — see
+  # docs/release-workflow.md §Windows code signing.
+  signtoolOptions:
+    signingHashAlgorithms: ["sha256"]
+
+nsis:
+  oneClick: false            # show a normal install wizard with path selection
+  perMachine: false          # per-user install (no admin/UAC), like the prior Inno Setup build
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Synthetix
+  uninstallDisplayName: Synthetix
+
+# ─── macOS target: DMG, arm64 only (Apple Silicon), unsigned ───────────────
+# Mirrors the Windows block's structure. identity: null explicitly skips
+# Developer ID signing; dmg.sign: false skips signing the DMG container itself
+# (per electron-builder#6094, the clean path for unsigned builds). Future signed
+# releases: remove these two nulls, add a Developer ID cert + afterSign notarize
+# hook. See docs/superpowers/specs/2026-07-18-macos-installer-packaging-design.md
+# §2.4/§2.5 for the unsigned-vs-signed trade-off and the Gatekeeper "damaged"
+# warning users must bypass with `xattr -dr com.apple.quarantine`.
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  icon: build/icon.icns
+  category: public.app-category.productivity
+  minimumSystemVersion: 12.0  # Electron 43 supports macOS 12 Monterey and newer.
+  identity: null              # unsigned build (user choice). ad-hoc signing skipped.
+  hardenedRuntime: false      # only needed for signed/notarized builds
+  gatekeeperAssess: false     # skip Gatekeeper assessment (no signature to assess)
+
+dmg:
+  sign: false                 # don't sign the DMG container (electron-builder#6094)
+
+# Compression: normal (not maximum). Maximum compresses slightly smaller but
+# significantly slows install extraction for large payloads. Normal is the
+# recommended default — install speed matters more than a few MB of size.
+compression: normal
+
+# Do NOT rebuild native modules for Electron's ABI. The bundled Next.js app
+# runs as a standalone node process (spawned by the main process), not inside
+# Electron's node — so it needs the standard-Node-ABI prebuilt binaries that
+# dist/app/ already ships. Rebuilding here would (a) target the wrong ABI and
+# (b) fail when a dev server holds better_sqlite3.node open (EPERM unlink).
+npmRebuild: false
+nodeGypRebuild: false
+
+# Update distribution. We publish our own latest.json (consumed by
+# electron/updater.ts) rather than electron-updater's latest.yml, because the
+# real app payload ships via extraResources and electron-updater's default
+# asar-only replacement is a no-op for Synthetix. The publish block is still
+# declared so electron-builder emits a latest.yml alongside the installer
+# (harmless, and useful for tooling that expects it) and so `gh release upload`
+# in scripts/publish-release.mjs knows the repo.
+publish:
+  provider: github
+  owner: WalkCloud
+  repo: Synthetix
+  # vPrefixedTagName: true (default) — tags are v<x.y.z>.

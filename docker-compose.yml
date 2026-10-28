@@ -1,0 +1,91 @@
+# Ubuntu intranet deployment: app container + nginx reverse proxy.
+#
+# First run on the server:
+#   cp deploy/synthetix.env.example deploy/synthetix.env   # then edit secrets
+#   docker load < synthetix-app-<version>.tar.gz           # or pull from registry
+#   docker compose up -d
+#
+# The app is not published on a host port; only nginx listens on :80.
+
+name: synthetix
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  PORT: "3000"
+  HOSTNAME: 0.0.0.0
+  # Plain-HTTP intranet: browsers drop Secure cookies, which breaks login.
+  COOKIE_SECURE: "false"
+  HF_HUB_OFFLINE: "1"
+  DB_PATH: /data
+  DATABASE_URL: file:/data/dev.db
+  DATA_DIR: /data
+  DOCUMENT_ROOT: /data/documents
+  RAG_ROOT: /data/rag
+  RAG_LOCK_ROOT: /data/locks/rag
+  DOCLING_ARTIFACTS_PATH: /opt/synthetix/docling
+  TIKTOKEN_CACHE_DIR: /opt/synthetix/tiktoken
+  LOCAL_EMBED_MODEL_PATH: /app/models/gte-multilingual-base
+  PYTHON_PATH: /usr/local/bin/python
+  PYTHON_DAEMON_ENABLED: "true"
+
+services:
+  app:
+    # SYNTHETIX_IMAGE lets the same file point at a LAN registry, e.g.
+    #   SYNTHETIX_IMAGE=192.168.1.20:5000/synthetix-app
+    image: ${SYNTHETIX_IMAGE:-synthetix-app}:${SYNTHETIX_VERSION:-1.1.0}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./deploy/synthetix.env
+    environment:
+      <<: *app-environment
+    volumes:
+      # Persistent state: dev.db, uploaded documents, RAG index, locks.
+      # Swap for a named volume if you don't want a host path.
+      - /srv/synthetix/data:/data
+    networks:
+      - internal
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - internal
+
+  # Optional LAN registry so code updates transfer only the changed layers
+  # instead of the whole ~4GB image. Start it once with:
+  #   docker compose --profile registry up -d registry
+  # then tag/push from the dev machine and set SYNTHETIX_VERSION accordingly.
+  registry:
+    image: registry:2
+    profiles:
+      - registry
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - /srv/synthetix/registry:/var/lib/registry
+    networks:
+      - internal
+
+networks:
+  internal:
