@@ -92,7 +92,7 @@ export const appVersion = ${JSON.stringify(
   );
   log(`wrote public/build-info.json (commit ${buildInfo.commit})`);
 
-  // 3) Copy root LICENSE → public/legal/LICENSE.txt for Web/Electron serving,
+  // 3) Copy root LICENSE → public/legal/LICENSE.txt for web serving,
   //    and copy the curated core-components manifest alongside it.
   const licenseSrc = path.join(ROOT, "LICENSE");
   fs.mkdirSync(path.join(PUBLIC_DIR, "legal"), { recursive: true });

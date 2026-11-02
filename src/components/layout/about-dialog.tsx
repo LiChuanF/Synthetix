@@ -11,8 +11,6 @@ import {
 import Image from "next/image";
 import { useLocale } from "@/lib/i18n";
 import { appVersion } from "@/lib/app-metadata";
-import { isUpdateSupported } from "@/lib/update-bridge";
-import { UpdatePanel } from "@/components/layout/update-panel";
 
 interface AboutDialogProps {
   open: boolean;
@@ -22,7 +20,6 @@ interface AboutDialogProps {
 export function AboutDialog({ open, onOpenChange }: AboutDialogProps) {
   const { t } = useLocale();
   const router = useRouter();
-  const supported = isUpdateSupported();
 
   function gotoNotices() {
     onOpenChange(false);
@@ -51,10 +48,6 @@ export function AboutDialog({ open, onOpenChange }: AboutDialogProps) {
           <p className="font-mono text-xs text-muted-foreground">
             {t.layout.about.version} {appVersion.version}
           </p>
-
-          {/* Auto-update panel — only in the Electron desktop app. Hidden in a
-              plain browser / self-hosted web (no window.synthetix.update). */}
-          {supported && open ? <UpdatePanel /> : null}
 
           {/* Legal entry — minimal, two quiet actions */}
           <div className="space-y-3 border-t pt-4">

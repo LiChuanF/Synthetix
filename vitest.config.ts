@@ -29,12 +29,8 @@ export default defineConfig({
       "**/node_modules/**",
       "**/.git/**",
       "**/_archive/**",
-      "**/e2e/**",
       "**/.next/**",
-      "**/dist/**",
       "**/coverage/**",
-      "**/playwright-report/**",
-      "**/test-results/**",
     ],
     env: {
       DATABASE_URL: "file:./dev.db",

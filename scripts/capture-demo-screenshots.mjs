@@ -6,19 +6,19 @@
  * (brainstorm messages + section generation auto-populate token usage too).
  *
  * Usage: node scripts/capture-demo-screenshots.mjs
- * Prereq: app running on localhost:3000, e2e/.auth/admin.json present.
+ * Prereq: app running on localhost:3000, .auth/admin.json present.
  */
 import { chromium } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 
 const BASE = process.env.BASE_URL || "http://localhost:3000";
-const AUTH = path.resolve("e2e/.auth/admin.json");
+const AUTH = path.resolve(".auth/admin.json");
 const OUT = path.resolve("docs/screenshots");
 fs.mkdirSync(OUT, { recursive: true });
 
 if (!fs.existsSync(AUTH)) {
-  console.error("Missing e2e/.auth/admin.json — run the app and auth first.");
+  console.error("Missing .auth/admin.json — run the app and auth first.");
   process.exit(1);
 }
 

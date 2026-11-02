@@ -1,0 +1,40 @@
+# 构建底座：只在外网构建一次。
+#
+# 里面只有 Node 24 + 项目全部 npm 依赖（含 next / prisma / typescript 等构建期依赖）。
+# 内网的薄构建（Dockerfile）会 FROM 这个镜像，因此内网不再需要 pnpm install，
+# 也不需要访问 npm / Prisma 下载引擎。
+#
+# 什么时候需要重新构建它：
+#   - package.json / pnpm-lock.yaml / pnpm-workspace.yaml 有变化
+#   - 升级 Node 主版本
+#   - 升级 Prisma / Next 等构建期依赖
+#
+# 构建（外网）：
+#   docker build -f Dockerfile.base -t synthetix-base:1.1.0 .
+# 导出（外网）：
+#   docker save synthetix-base:1.1.0 -o synthetix-base-1.1.0.tar
+# 导入（内网服务器）：
+#   docker load -i synthetix-base-1.1.0.tar
+
+FROM node:24-bookworm
+
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# 外网构建机访问 npm 较慢，使用国内镜像；pnpm 11 不认 npm_config_registry，
+# 所以显式传 --registry，并写入全局 .npmrc 供隐式调用使用。
+RUN npm install -g pnpm@11.15.0 --registry=https://mirrors.cloud.tencent.com/npm/
+RUN printf 'registry=https://mirrors.cloud.tencent.com/npm/\nnode-linker=hoisted\nverify-deps-before-run=false\nfetch-retries=5\nfetch-retry-mintimeout=10000\nfetch-retry-maxtimeout=120000\nfetch-timeout=300000\n' > /root/.npmrc
+
+# Prisma 的 postinstall 会从 binaries.prisma.sh 下载引擎；npmmirror 有同样的目录结构。
+ENV PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+
+# hoisted 布局：生成的真实 node_modules 树可以直接被内网薄构建复用。
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile --config.node-linker=hoisted \
+      --registry=https://mirrors.cloud.tencent.com/npm/
+
+# 说明：这里故意不设置 NODE_ENV=production，否则 pnpm 会跳过 devDependencies，
+# 内网 next build 会缺 typescript / tailwind 等构建期包。

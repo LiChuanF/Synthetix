@@ -1,86 +1,58 @@
-# Synthetix Docker 部署教程（Ubuntu 内网）
+# Synthetix Docker 部署教程（内网离线）
 
-本文档对应仓库根目录的 `Dockerfile`、`.dockerignore`、`docker-compose.yml` 和 `deploy/` 目录。
+本文档对应仓库根目录的 `Dockerfile`、`Dockerfile.base`、`Dockerfile.full`、
+`.dockerignore`、`docker-compose.yml` 和 `deploy/` 目录。
 
 目标环境：
 
-- **构建机**：Windows 开发机，装有 Docker Desktop，能访问 Docker Hub / npm / PyPI / download.pytorch.org。
+- **外网构建机**：Windows 开发机，装有 Docker Desktop，能访问 Docker Hub / npm / PyPI / download.pytorch.org。
+- **内网开发机**：Windows，有源码和 Node，**不能联网**，日常改代码在这里。
 - **运行环境**：内网 Ubuntu 服务器，能运行 Docker 和 docker compose，**不需要联网**，也不需要安装 Node 或 Python。
-- **浏览器访问**：`http://<服务器IP>/`（纯 HTTP，内网）。
+- **浏览器访问**：`http://<服务器IP>:3000/`（纯 HTTP，内网）。
+- **嵌入方式**：主项目 Vue3 页面用 iframe 嵌入，iframe 地址必须与主页面同 host（见 §2.7）。
 
 ---
 
-## 0. 整体结构
+## 0. 先理解：为什么镜像要分三个
+
+镜像 = **已经编译好的代码 + 依赖**。你在 Win 上改源码，容器里的代码不会变，
+因为容器跑的是镜像里的 `.next`，不是你的源码。所以改完代码必须重新编译。
+
+难点在于：内网不能联网，`pnpm install` / `pip install` / `next build` 都不能在线装依赖。
+解决办法是**把“依赖环境”和“代码”拆开**：
+
+| 镜像 | 在哪里构建 | 里面有什么 | 什么时候需要重建 |
+|---|---|---|---|
+| `synthetix-app:1.1.0` | 外网，`Dockerfile.full` | Node + Python + Docling/tiktoken/GTE 模型 + 旧版代码 | Python 依赖、模型、Node/Python 大版本变化时 |
+| `synthetix-base:1.1.0` | 外网，`Dockerfile.base` | Node + 全部 npm 依赖（含 typescript/tailwind 等构建期依赖） | `package.json` / `pnpm-lock.yaml` 变化时 |
+| `synthetix-app:1.1.x` | **内网，`Dockerfile`** | 只有新编译出来的 `.next` 和源码 | **每次改完业务代码** |
+
+内网的薄构建（`Dockerfile`）只做三件事：
 
 ```
-Windows 开发机                              内网 Ubuntu 服务器
-┌─────────────────────────┐                ┌──────────────────────────────┐
-│ 源码 + offline/ 资产     │  docker save   │ docker load / docker pull     │
-│ docker build            │ ─────────────► │ docker compose up -d          │
-│ → synthetix-app:1.1.0   │  (或 registry) │   ├─ app 容器 (Node+Python)   │
-└─────────────────────────┘                │   └─ nginx 容器 (:80)         │
-                                           │         └─ /srv/synthetix/data│
-                                           └──────────────────────────────┘
+FROM synthetix-base:1.1.0     ← 拿到 Node 和全部 npm 依赖
+COPY 源码
+next build                     ← 唯一需要执行的编译
+FROM synthetix-app:1.1.0       ← 拿到 Python、模型、运行时环境
+COPY 新编译的 .next / public / workers / prisma
 ```
 
-`app` 容器内部包含：
+所以内网构建**不需要联网，也不需要重新装依赖**，通常 1~3 分钟。
 
-```
-/app
-├─ server.js                  Next.js standalone 入口
-├─ .next/                     构建产物
-├─ node_modules/              Linux 版生产依赖（含 better-sqlite3）
-├─ workers/python/            Docling / LightRAG / ONNX 脚本
-├─ prisma/migrations/         数据库迁移
-├─ models/gte-multilingual-base/   本地分块用的 ONNX 模型
-├─ docker-entrypoint.mjs      启动前跑 migration，然后启动 server
-└─ runtime 不是独立的，Node 是 /usr/local/bin/node，Python 是 /usr/local/bin/python
-
-/opt/synthetix
-├─ docling/                   Docling 布局 + TableFormer + RapidOCR 模型
-└─ tiktoken/                  cl100k_base + o200k_base BPE 缓存
-
-/data                         挂载自宿主机 /srv/synthetix/data
-├─ dev.db                     SQLite 数据库
-├─ documents/                 上传的原始文档
-├─ rag/                       LightRAG 索引
-├─ locks/
-└─ tmp/
-```
+> 为什么不能把 Windows 上编译好的 `.next` 直接挂进 Linux 容器？
+> 实测会 500：Turbopack 会为 Prisma 等外部包生成哈希别名
+> （`@prisma/client-254bee1428372f77/runtime/client`），Windows 编译产物和
+> 容器里的 Linux `node_modules` 对不上。**构建产物必须和构建它的 Linux 依赖环境在一起。**
 
 ---
 
-## 1. 前置条件
+## 1. 外网一次性准备
 
-### 1.1 开发机
+### 1.1 准备 `offline/` 资产（只有重建运行时底座时才需要）
 
-- Docker Desktop 已安装并**正在运行**（托盘图标为绿色）。
-- 磁盘至少留出 15GB（镜像约 4GB + 构建缓存）。
-- 能访问：
-  - Docker Hub（拉取 `node:24-bookworm`、`python:3.14-slim`、`nginx:1.27-alpine`）
-  - npm registry（`pnpm install`）
-  - PyPI（`pip install`）
-  - `download.pytorch.org`（CPU 版 torch）
-- 如果 Docker Hub 不通，先在 Docker Desktop 设置里配置镜像加速器，或从其他机器 `docker save` 这三个基础镜像再导入。
-
-### 1.2 服务器
-
-- 已安装 Docker Engine 和 `docker compose` 插件（`docker compose version` 可用）。
-- 80 端口空闲（如果已有 nginx 容器占用，见 §9.4）。
-- 准备数据目录：
-
-```bash
-sudo mkdir -p /srv/synthetix/data /srv/synthetix/registry
-sudo chmod 755 /srv/synthetix
-```
-
----
-
-## 2. 准备 `offline/` 资产（只做一次）
-
-镜像里要带 Docling 模型、tiktoken 缓存和 GTE 向量模型，它们来自之前准备的离线包 `D:\synthetix-offline`。
-
-**PowerShell（开发机）：**
+运行时底座里的 Docling 模型、tiktoken 缓存和 GTE 向量模型来自
+`D:\synthetix-offline`。如果你已经有 `synthetix-app:1.1.0` 镜像，这一步已经做过了，
+可以跳过。
 
 ```powershell
 New-Item -ItemType Directory -Force D:\Project\Synthetix\offline | Out-Null
@@ -90,156 +62,199 @@ Copy-Item -Recurse D:\synthetix-offline\tiktoken-cache        D:\Project\Synthet
 Copy-Item -Recurse D:\synthetix-offline\gte-multilingual-base D:\Project\Synthetix\offline\
 ```
 
-检查（这三个目录必须都存在）：
+`offline/` 约 900MB，已加入 `.gitignore`，不要提交。
+不要用 `mklink /J` 目录联接，Docker 构建上下文对 junction 处理不可靠。
+
+### 1.2 构建运行时底座（已有 `synthetix-app:1.1.0` 就跳过）
 
 ```powershell
-Get-ChildItem D:\Project\Synthetix\offline
-Test-Path D:\Project\Synthetix\offline\docling-models
-Test-Path D:\Project\Synthetix\offline\tiktoken-cache
-Test-Path D:\Project\Synthetix\offline\gte-multilingual-base
+cd D:\Project\Synthetix
+docker build -f Dockerfile.full -t synthetix-app:1.1.0 .
 ```
 
-`offline/` 已加入 `.gitignore`，不会提交到仓库。约 900MB。
-
-> 注意：不要用目录联接（`mklink /J`）指向 `D:\synthetix-offline`，Docker 构建上下文对 junction 的处理不可靠，请用 `Copy-Item -Recurse` 实际复制。
-
----
-
-## 3. 构建镜像
-
-在项目根目录（`D:\Project\Synthetix`）执行：
-
-```powershell
-docker build -t synthetix-app:1.1.0 .
-```
-
-首次构建约 10–30 分钟，取决于网速。它会依次：
-
-1. 拉取 `node:24-bookworm`，`pnpm install`，`prisma generate`，`next build`；
-2. 拉取 `python:3.14-slim`，安装 CPU 版 torch 和 `workers/python/requirements.txt`；
-3. 复制 Docling / tiktoken / GTE 资产；
-4. 复制 standalone 产物、`public/`、`workers/`、`prisma/`。
-
-常见失败：
-
-| 报错 | 原因 / 处理 |
-|---|---|
-| `failed to compute cache key: "/offline/..." not found` | §2 没做 |
-| 拉取基础镜像超时 | Docker Hub 不通，配置加速器或导入镜像 |
-| `pip install torch` 连接 `download.pytorch.org` 失败 | 删除 Dockerfile 里那条 CPU torch 命令，直接用 PyPI（镜像会大 2GB 左右） |
-| `better-sqlite3` 编译失败 | 构建阶段已使用完整版 node 镜像（含 g++/make/python3），若仍失败检查网络是否能下载 prebuild |
-
-构建成功后确认：
+首次约 10~30 分钟。成功后确认：
 
 ```powershell
 docker images synthetix-app
-# REPOSITORY       TAG     IMAGE ID       CREATED        SIZE
-# synthetix-app    1.1.0   xxxxxxxxxxxx   2 minutes ago  ~4GB
+# synthetix-app   1.1.0   ...   约 6.4GB
 ```
 
-### 改代码后重新构建
+> 这个镜像已经在你的服务器上了。**不要用新版本号覆盖它**，它是内网薄构建的
+> `FROM` 底座。以后只有 Python 依赖/模型变化时才需要重建它。
 
-直接再执行一次 `docker build -t synthetix-app:1.1.1 .`。系统层、Python 依赖层、模型层会命中缓存，只重跑 `next build` 和最后的代码 COPY，通常 1–3 分钟。
+### 1.3 构建构建底座
+
+```powershell
+docker build -f Dockerfile.base -t synthetix-base:1.1.0 .
+```
+
+它只做 `pnpm install`，不编译业务代码。约 4.7GB（Node 镜像 + 完整 node_modules）。
+这是这次需要新带进内网的唯一大文件。
+
+成功后确认：
+
+```powershell
+docker images synthetix-base
+# synthetix-base   1.1.0   ...   约 4.7GB
+```
+
+> 如果 `package.json` / `pnpm-lock.yaml` 以后有变化，重新执行这条命令并换一个 tag
+> （例如 `1.1.1`），同时把 `Dockerfile` 里的 `ARG BASE` 改成新 tag。
+
+### 1.4 导出并带进内网
+
+运行时底座已经在服务器上，只需要导出构建底座：
+
+```powershell
+docker save synthetix-base:1.1.0 -o synthetix-base-1.1.0.tar
+```
+
+用 U 盘 / 共享盘 / scp 把 `synthetix-base-1.1.0.tar` 放到服务器 `/srv/synthetix/`。
+建议先压缩（约 2GB 左右）。
+
+如果你要在一台全新的服务器上从零部署，两个镜像一起导出：
+
+```powershell
+docker save synthetix-app:1.1.0 synthetix-base:1.1.0 -o synthetix-images-1.1.0.tar
+```
 
 ---
 
-## 4. 把镜像送到服务器
+## 2. 服务器一次性准备
 
-### 方式 A：`docker save` / `docker load`（简单，但每次全量约 4GB）
-
-开发机：
-
-```powershell
-docker save synthetix-app:1.1.0 -o synthetix-app-1.1.0.tar
-# 4GB 左右，建议先压缩
-# 没有 gzip 的话直接传 tar；有 7-Zip 可以压缩成 .tar.gz 再传
-```
-
-服务器：
-
-```bash
-docker load -i synthetix-app-1.1.0.tar
-docker images synthetix-app
-```
-
-### 方式 B：内网 registry（推荐，更新只传变化的层）
-
-一次性准备（开发机拉取 registry 镜像并带过去）：
-
-```powershell
-docker pull registry:2
-docker save registry:2 -o registry2.tar
-```
-
-服务器：
-
-```bash
-docker load -i registry2.tar
-cd /path/to/project   # 有 docker-compose.yml 的目录
-docker compose --profile registry up -d registry
-curl http://127.0.0.1:5000/v2/_catalog   # 应返回 JSON
-```
-
-开发机 Docker Desktop → Settings → Docker Engine，加入（把 IP 换成服务器地址）：
-
-```json
-{
-  "insecure-registries": ["192.168.1.20:5000"]
-}
-```
-
-保存并重启 Docker Desktop。然后每次更新：
-
-```powershell
-docker build -t 192.168.1.20:5000/synthetix-app:1.1.1 .
-docker push 192.168.1.20:5000/synthetix-app:1.1.1
-```
-
-> push 只会传输变化层（通常 100–300MB）。首次 push 仍是全量。
-
----
-
-## 5. 服务器首次部署
-
-把仓库里的这些文件放到服务器上同一目录，例如 `/srv/synthetix/`：
-
-```
-docker-compose.yml
-deploy/nginx.conf
-deploy/synthetix.env.example
-```
-
-然后：
+### 2.1 导入镜像
 
 ```bash
 cd /srv/synthetix
+docker load -i synthetix-base-1.1.0.tar
+# 全新服务器还需要:
+# docker load -i synthetix-app-1.1.0.tar
 
-# 1) 生成密钥
+docker images | grep synthetix
+# 应该能看到 synthetix-app:1.1.0 和 synthetix-base:1.1.0
+```
+
+### 2.2 建目录
+
+```bash
+sudo mkdir -p /srv/synthetix/app /srv/synthetix/data
+sudo chown -R "$USER":"$USER" /srv/synthetix
+```
+
+- `/srv/synthetix/app`：源码 + compose 文件（每次更新同步到这里）
+- `/srv/synthetix/data`：数据库、上传文档、RAG 索引（**不能删**）
+
+### 2.3 把源码放到服务器
+
+把仓库源码同步到 `/srv/synthetix/app`。**必须排除**：
+
+```
+node_modules
+.next
+offline
+.git
+synthetix-data
+data
+.tmp-lr
+*.vsix
+deploy/synthetix.env
+```
+
+说明：
+
+- `node_modules` **不用带**，`synthetix-base` 里已经有 Linux 版。
+- `offline` **不用带**，模型已经在 `synthetix-app:1.1.0` 里。
+- 源码本身只有几十 MB，用共享盘 / WinSCP / scp 都很快；实在不行 U 盘也可以。
+- `deploy/synthetix.env` 是服务器本地密钥文件，同步时**不要覆盖或删除**。
+- `src/app/fonts/` 下的两个 woff2 必须一起同步过去，否则内网 `next build`
+  会去 Google Fonts 拉字体并失败。字体文件约 76KB，见 §8.2。
+
+同步工具示例（WinSCP 图形界面最省事；有 rsync 的话）：
+
+```bash
+rsync -av --delete \
+  --exclude node_modules --exclude .next --exclude offline \
+  --exclude .git --exclude synthetix-data --exclude data \
+  --exclude .tmp-lr --exclude '*.vsix' \
+  --exclude deploy/synthetix.env \
+  /path/to/Synthetix/ user@server:/srv/synthetix/app/
+```
+
+### 2.4 生成密钥
+
+```bash
+cd /srv/synthetix/app
 cp deploy/synthetix.env.example deploy/synthetix.env
-# 用随机值替换两个占位符，例如：
-#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-# 分别生成两个不同的值填进去
 
-# 2) 启动
-SYNTHETIX_VERSION=1.1.0 docker compose up -d --no-build
+# 生成两个不同的随机值
+openssl rand -hex 32
+openssl rand -hex 32
+```
 
-# 3) 观察状态
+把两个值分别填进 `deploy/synthetix.env` 的 `JWT_SECRET` 和 `ENCRYPTION_KEY`。
+**这两个值以后永远不要改**，否则所有人登录失效、已保存的模型 API Key 无法解密。
+
+### 2.5 第一次薄构建
+
+```bash
+cd /srv/synthetix/app
+docker build -t synthetix-app:1.1.1 .
+```
+
+注意：
+
+- **不要**打成 `synthetix-app:1.1.0`，那个 tag 是运行时底座。
+- 构建过程不需要联网。正常情况下 1~3 分钟。
+- 如果卡在 `next build` 并报 `Failed to fetch ... from Google Fonts`，
+  说明 `src/app/fonts/` 没同步过去，见 §8.2。
+
+### 2.6 启动
+
+```bash
+cd /srv/synthetix/app
+SYNTHETIX_VERSION=1.1.1 docker compose up -d --no-build
+
 docker compose ps
 docker compose logs -f app
 ```
 
-`app` 的 healthcheck 通过后 nginx 才会启动（`depends_on.condition: service_healthy`）。启动日志里应看到：
+日志里应看到：
 
 ```
-[migrate] applied 20261020131042_...
-[migrate] database ready at /data/dev.db (N applied)
+[migrate] applied 20261027130836_znyai
+[migrate] database ready at /data/dev.db (15 applied)
 ▲ Next.js 16.2.4
 - Local: http://0.0.0.0:3000
+✓ Ready
 ```
 
-浏览器打开 `http://<服务器IP>/`，按页面提示创建第一个管理员账号。
+浏览器打开 `http://<服务器IP>:3000/`，按页面提示创建第一个管理员账号。
 
-### 首次启动后配置模型
+> 启动时 `[catalog] downloading LiteLLM catalog` 会尝试联网。内网下载失败不影响
+> 启动；想消掉这条日志，把外网跑出来的 `litellm-catalog.json` 放到
+> `/srv/synthetix/data/` 即可。
+
+### 2.7 嵌入主项目（iframe）
+
+主项目 Vue3 页面里这样写：
+
+```vue
+<iframe :src="synthetixUrl" class="h-full w-full border-0" />
+```
+
+```ts
+// 必须用主页面自己的 host，不要写死 IP 或另换域名。
+// 同一 host 下端口不同仍属同站，SameSite=Strict 的登录 Cookie 才能正常发送。
+const synthetixUrl = `${location.protocol}//${location.hostname}:3000/`;
+```
+
+如果服务器上的 3000 端口换成了别的（见 §8.4），同步改这里的端口号。
+
+> 反面例子：主页面用 `http://oa.corp.local/` 打开、iframe 写 `http://10.1.2.3:3000/`。
+> 这属于**跨站**，登录 Cookie 是第三方 Cookie，`SameSite=Strict` 不会发送，
+> 表现为登录成功后立刻跳回 `/login`。只要用 `location.hostname` 动态拼接就不会踩这个坑。
+
+### 2.8 首次启动后配置模型
 
 模型配置保存在**数据库**里，不是环境变量。登录后进入 **模型管理**，添加：
 
@@ -248,57 +263,107 @@ docker compose logs -f app
 
 ---
 
-## 6. 日常更新
+## 3. 日常发版（每次改完代码）
 
-### 6.1 使用 registry（推荐）
+假设当前线上是 `1.1.1`，你改完代码要发 `1.1.2`。
 
-开发机：
+**1. 内网 Win：改代码、本地自测**
 
-```powershell
-docker build -t 192.168.1.20:5000/synthetix-app:1.1.1 .
-docker push 192.168.1.20:5000/synthetix-app:1.1.1
+```bat
+cd /d D:\Project\Synthetix
+node node_modules\next\dist\bin\next dev
 ```
 
-服务器：
+**2. 把源码同步到服务器**（排除 §2.3 列的那些目录，别覆盖 `deploy/synthetix.env`）
+
+**3. 服务器：构建新版本**
 
 ```bash
-cd /srv/synthetix
-SYNTHETIX_IMAGE=192.168.1.20:5000/synthetix-app \
-SYNTHETIX_VERSION=1.1.1 \
-  docker compose pull app
-
-SYNTHETIX_IMAGE=192.168.1.20:5000/synthetix-app \
-SYNTHETIX_VERSION=1.1.1 \
-  docker compose up -d --no-build
+cd /srv/synthetix/app
+docker build -t synthetix-app:1.1.2 .
 ```
 
-数据库迁移在容器启动时自动执行（`docker-entrypoint.mjs`），无需手工操作。
-
-### 6.2 使用 tar
-
-```powershell
-docker save synthetix-app:1.1.1 -o synthetix-app-1.1.1.tar
-```
+**4. 服务器：切换容器**
 
 ```bash
-docker load -i synthetix-app-1.1.1.tar
-cd /srv/synthetix
+SYNTHETIX_VERSION=1.1.2 docker compose up -d --no-build
+docker compose ps
+docker compose logs --tail 30 app
+```
+
+**5. 浏览器强制刷新**（`Ctrl+F5`），确认页面和接口正常。
+
+数据库迁移会在容器启动时由 `docker-entrypoint.mjs` 自动执行，不需要手工跑。
+
+### 回滚
+
+旧镜像还在本地，直接把版本号切回去：
+
+```bash
 SYNTHETIX_VERSION=1.1.1 docker compose up -d --no-build
 ```
 
-### 6.3 回滚
+> 数据库迁移只向前、不回滚。如果新版本加了迁移，回滚镜像后数据库仍是新结构
+> （通常兼容，但请知悉）。
 
-镜像还在本地就直接切回旧 tag：
+### 版本号怎么起
 
-```bash
-SYNTHETIX_VERSION=1.1.0 docker compose up -d --no-build
-```
-
-> 数据库迁移只向前、不回滚。如果新版本加了迁移，回滚镜像后数据库仍是新结构（通常兼容，但请知悉）。
+- 每次构建换一个新 tag（`1.1.1`、`1.1.2`、`1.1.3`…），方便回滚。
+- `1.1.0` 永远留给运行时底座，不要覆盖。
+- 想用日期也行：`20261029-1`，只要 compose 里的 `SYNTHETIX_VERSION` 和
+  `docker build -t` 的 tag 一致。
 
 ---
 
-## 7. 数据与备份
+## 4. 什么时候必须回外网重建
+
+日常业务代码（页面、接口、样式、组件、Python worker 脚本、数据库迁移）
+**全部在内网完成**，不需要回外网。
+
+只有下面这些情况需要：
+
+| 变化 | 要重建什么 | 命令 |
+|---|---|---|
+| `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml` | 构建底座 | `docker build -f Dockerfile.base -t synthetix-base:1.1.1 .` |
+| `workers/python/requirements.txt`、Docling/tiktoken/GTE 模型 | 运行时底座 | `docker build -f Dockerfile.full -t synthetix-app:1.1.1 .` |
+| Node / Python 大版本 | 两个底座 | 先改 `Dockerfile.base` / `Dockerfile.full` 的 `FROM`，再分别构建 |
+| 只改业务代码 | **什么都不用重建** | 内网 `docker build -t synthetix-app:<新tag> .` |
+
+重建底座后，把新镜像 `docker save` 带进内网，并修改内网 `Dockerfile` 顶部的：
+
+```dockerfile
+ARG BASE=synthetix-base:1.1.0
+ARG RUNTIME=synthetix-app:1.1.0
+```
+
+或者构建时临时覆盖：
+
+```bash
+docker build \
+  --build-arg BASE=synthetix-base:1.1.1 \
+  --build-arg RUNTIME=synthetix-app:1.1.1 \
+  -t synthetix-app:1.1.2 .
+```
+
+---
+
+## 5. 验证“真的不联网也能构建”
+
+在外网机器上可以用 `--network=none` 模拟断网：
+
+```powershell
+docker build --network=none -t synthetix-app:test .
+```
+
+本仓库已经实测通过：`next build` 约 24 秒，`/login` 返回 200，
+登录接口返回 401（Prisma/SQLite 正常），页面只引用本地
+`/_next/static/media/*.woff2`，没有任何 `fonts.googleapis.com` 请求。
+
+内网服务器本身就没有外网，正常 `docker build` 即可，不需要加这个参数。
+
+---
+
+## 6. 数据与备份
 
 所有持久数据都在宿主机 `/srv/synthetix/data`：
 
@@ -309,21 +374,24 @@ SYNTHETIX_VERSION=1.1.0 docker compose up -d --no-build
 | `rag/` | LightRAG 图谱与向量索引 |
 | `locks/` | RAG 互斥锁 |
 | `tmp/` | 转换临时文件 |
+| `litellm-catalog.json` | 模型目录缓存（可选） |
 
 备份：
 
 ```bash
 # 推荐先停容器再打包，保证 SQLite 一致
+cd /srv/synthetix/app
 docker compose stop app
 tar -czf /srv/synthetix/backup-$(date +%F).tar.gz -C /srv synthetix/data
 docker compose start app
 ```
 
-**重建容器、更新镜像都不会丢数据**，因为 `/data` 是宿主机目录挂载。但不要删除 `/srv/synthetix/data`。
+**重建容器、重建镜像、切换版本都不会丢数据**，因为 `/data` 是宿主机目录挂载。
+但不要删除 `/srv/synthetix/data`。
 
 ---
 
-## 8. 配置项说明
+## 7. 配置项说明
 
 `deploy/synthetix.env`（由 compose 注入，优先于镜像内默认值）：
 
@@ -332,46 +400,106 @@ docker compose start app
 | `JWT_SECRET` | JWT 签名密钥，**必须固定**，否则所有人登录失效 |
 | `ENCRYPTION_KEY` | 模型 API Key 等敏感字段的加密密钥，**必须固定**，否则已存密钥无法解密 |
 
-`docker-compose.yml` 中已固定：
+其余运行时变量由运行时底座镜像的 `ENV` 提供（`docker-compose.yml` 不重复声明），
+需要临时覆盖时在 `deploy/synthetix.env` 里追加即可：
 
 | 变量 | 值 | 说明 |
 |---|---|---|
+| `PORT` / `HOSTNAME` | `3000` / `0.0.0.0` | Next.js 监听地址 |
 | `COOKIE_SECURE` | `false` | 纯 HTTP 必须关闭，否则浏览器拒收登录 Cookie |
 | `DB_PATH` / `DATABASE_URL` | `/data` / `file:/data/dev.db` | SQLite 位置 |
+| `DATA_DIR` / `DOCUMENT_ROOT` / `RAG_ROOT` / `RAG_LOCK_ROOT` | `/data/...` | 数据目录布局 |
 | `DOCLING_ARTIFACTS_PATH` | `/opt/synthetix/docling` | Docling 模型 |
 | `TIKTOKEN_CACHE_DIR` | `/opt/synthetix/tiktoken` | tiktoken 缓存 |
 | `LOCAL_EMBED_MODEL_PATH` | `/app/models/gte-multilingual-base` | 分块用 ONNX 模型 |
 | `HF_HUB_OFFLINE` | `1` | 杜绝 HuggingFace 联网尝试 |
+| `PYTHON_PATH` / `PYTHON_DAEMON_ENABLED` | `/usr/local/bin/python` / `true` | Python worker |
 
 ---
 
-## 9. 常见问题
+## 8. 常见问题
 
-### 9.1 `env file ... not found`
+### 8.1 `failed to solve: synthetix-base:1.1.0: not found`
 
-没有创建 `deploy/synthetix.env`：
+构建底座没导入，或者 tag 不一致：
 
 ```bash
-cp deploy/synthetix.env.example deploy/synthetix.env
+docker images | grep synthetix
+docker load -i /srv/synthetix/synthetix-base-1.1.0.tar
 ```
 
-### 9.2 登录成功后仍然跳回登录页
+### 8.2 `Failed to fetch ... from Google Fonts`
 
-检查 `COOKIE_SECURE` 是否为 `false`。如果是通过 HTTPS 访问，则应设为 `true`（或不设置）。
+内网构建时 `next build` 仍去 Google 拉字体。检查：
 
-### 9.3 上传文档返回 413 / 504
+```bash
+ls -l src/app/fonts/
+# 必须有:
+#   inter-latin.woff2
+#   plus-jakarta-sans-latin.woff2
+```
 
-- 413：nginx 的 `client_max_body_size` 太小，检查 `deploy/nginx.conf` 是否为 `200m`。
-- 504：大文档转换超时，检查 `proxy_read_timeout` 是否为 `3600s`。
+`src/app/layout.tsx` 应该是 `next/font/local`，不能是 `next/font/google`。
+这两个字体文件是从旧镜像的 `.next/static/media/` 里提取的，视觉与原来一致，
+不要删除。
 
-### 9.4 80 端口被现有 nginx 容器占用
+### 8.3 版本没变 / 容器还在跑旧代码
 
-二选一：
+```bash
+docker compose ps
+docker inspect synthetix-app:1.1.2 --format '{{.Id}}'
+```
 
-1. 修改 `docker-compose.yml` 中 nginx 的端口映射，例如 `"8080:80"`，访问 `http://IP:8080/`。
-2. 不用本 compose 的 nginx，把 `deploy/nginx.conf` 的 `location /` 合并进你现有的 nginx 配置，并确保两个容器在同一个 Docker network，`proxy_pass http://app:3000`。
+确认 `SYNTHETIX_VERSION` 指向新 tag，并且用了 `--no-build`：
 
-### 9.5 `app` 一直 unhealthy
+```bash
+SYNTHETIX_VERSION=1.1.2 docker compose up -d --no-build
+```
+
+如果还是旧页面，浏览器 `Ctrl+F5` 强制刷新。
+
+### 8.4 3000 端口被占用 / 从办公网访问不到 3000
+
+**端口被占用**：改 `docker-compose.yml` 的映射，例如 `"8080:3000"`，
+同时把 iframe 地址改成 `http://<host>:8080/`。
+
+**3000 从办公网不可达**（防火墙只放行 80）时有两条路：
+
+1. 申请放行 3000（推荐，保持架构最简单）。
+2. 让主项目的 nginx 容器反代本应用：给那个 nginx 加一个独立端口，例如
+
+   ```nginx
+   server {
+       listen 8080;
+       client_max_body_size 200m;
+       proxy_read_timeout 3600s;
+       proxy_send_timeout 3600s;
+
+       location / {
+           proxy_pass http://synthetix-app:3000;   # 两个容器需在同一 docker network
+           proxy_http_version 1.1;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+           proxy_buffering off;                    # LLM 流式输出必需
+       }
+   }
+   ```
+
+   同时给主项目 nginx 容器发布 `8080:8080`。**不要用 `/synthetix/` 子路径**：
+   应用里有 94 处 `/api/v1/...` 根绝对路径和 `/_next/` 静态资源，子路径需要
+   `basePath` 并改代码。
+
+### 8.5 上传文档返回 413 / 504
+
+应用前面没有 nginx，这两个限制由 Next.js 自己负责：
+
+- 413：确认 `next.config.ts` 里 `experimental.proxyClientMaxBodySize` 仍为 `"200mb"`。
+- 504：如果前面还套了主项目 nginx（见 §8.4 的备选方案），检查那个 `location`
+  的 `proxy_read_timeout` 是否至少 `3600s`。
+
+### 8.6 `app` 一直 unhealthy
 
 ```bash
 docker compose logs app
@@ -381,37 +509,62 @@ docker compose logs app
 
 - `deploy/synthetix.env` 缺失或 `JWT_SECRET` 为空；
 - 数据目录没有写权限（容器默认 root，一般不会）；
-- 3000 端口被容器内其他进程占用（本镜像只跑一个 server，通常不会）。
+- 端口被占用。
 
-### 9.6 提示缺少 Python 模块
+### 8.7 登录成功后仍然跳回登录页
 
-说明镜像构建时 `pip install` 没完全成功。重新 build，观察构建日志中 `pip install -r workers/python/requirements.txt` 是否报错。
+检查 `COOKIE_SECURE` 是否为 `false`。如果通过 HTTPS 访问，则应设为 `true`
+（或不设置）。另外确认 iframe 地址和主页面同 host（§2.7）。
 
-### 9.7 想确认镜像里到底有什么
+### 8.8 提示缺少 Python 模块
+
+说明运行时底座构建时 `pip install` 没完全成功。这属于底座问题，需要回外网：
+
+```powershell
+docker build -f Dockerfile.full -t synthetix-app:1.1.1 .
+```
+
+带进内网后，用 `--build-arg RUNTIME=synthetix-app:1.1.1` 重新薄构建。
+
+### 8.9 想确认镜像里到底有什么
 
 ```bash
 docker run --rm synthetix-app:1.1.0 sh -c "ls /app && ls /opt/synthetix && /usr/local/bin/python --version"
+docker run --rm synthetix-base:1.1.0 sh -c "ls /app/node_modules | head"
 ```
 
-### 9.8 更新后版本没变
+### 8.10 磁盘空间
 
-`docker compose up -d` 默认可能复用旧容器。用 `--no-build` 并确认 `SYNTHETIX_VERSION` 指向新 tag：
+- `synthetix-app:1.1.0` 约 6.4GB（运行时底座）
+- `synthetix-base:1.1.0` 约 4.7GB（构建底座）
+- 每个内网版本镜像只多出约 100~200MB（共享底座层）
 
-```bash
-docker compose ps
-docker inspect synthetix-app:1.1.1 --format '{{.Id}}'
-```
+旧版本镜像不要急着删，回滚要用。确认稳定后再 `docker rmi synthetix-app:<旧tag>`。
 
 ---
 
-## 10. 文件清单
+## 9. 文件清单
 
 | 文件 | 说明 |
 |---|---|
-| `Dockerfile` | 两阶段构建：Node 构建 + Python 运行 |
+| `Dockerfile` | **内网薄构建**：FROM 两个底座 → `next build` → 复制产物 |
+| `Dockerfile.base` | **外网构建底座**：Node + 全部 npm 依赖 |
+| `Dockerfile.full` | **外网运行时底座**：Node + Python + 模型 + 完整应用 |
+| `docker-compose.yml` | 只跑 `app` 一个容器；不含 nginx / registry |
 | `.dockerignore` | 排除 Windows 产物、密钥、无关目录 |
-| `docker-compose.yml` | app + nginx + 可选 registry |
-| `deploy/nginx.conf` | 反向代理配置（上传大小、超时） |
+| `src/app/fonts/` | Inter / Plus Jakarta Sans 本地字体，**内网构建必需，不能删** |
 | `deploy/docker-entrypoint.mjs` | 启动前应用数据库迁移 |
 | `deploy/synthetix.env.example` | 密钥模板 |
-| `offline/` | 模型与缓存（本地准备，不提交） |
+| `offline/` | 只在外网构建 `Dockerfile.full` 时需要，不提交、不带进内网 |
+
+---
+
+## 10. 和旧流程的区别
+
+| | 旧流程 | 现在 |
+|---|---|---|
+| 每次改代码 | 外网重打完整镜像，U 盘搬约 2.2~6GB | **内网 `docker build`，1~3 分钟** |
+| 镜像传输 | 每个版本都传 | 只传一次 `synthetix-base`（约 4.7GB） |
+| nginx | 曾内置 | 已删除，浏览器直连 3000 |
+| registry | 可选 | 已删除，不需要 |
+| 内网依赖 | 每次重新 install | 底座里已有，完全离线 |

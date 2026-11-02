@@ -1,20 +1,29 @@
 import type { Metadata } from "next";
-import { Plus_Jakarta_Sans, Inter } from "next/font/google";
+import localFont from "next/font/local";
 import { cn } from "@/lib/utils";
 import { Providers } from "@/components/providers";
 import { resolveLocale } from "@/lib/i18n/server";
 import "./globals.css";
 
-const plusJakartaSans = Plus_Jakarta_Sans({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+// 字体文件是从已构建镜像的 .next/static/media 里取出来的
+// (Inter / Plus Jakarta Sans, latin 子集, 可变字重)。
+// 放在仓库里后, `next build` 不再访问 Google Fonts, 内网断网也能构建。
+const plusJakartaSans = localFont({
+  src: "./fonts/plus-jakarta-sans-latin.woff2",
+  weight: "400 700",
+  style: "normal",
   variable: "--font-display",
+  display: "swap",
+  adjustFontFallback: "Arial",
 });
 
-const inter = Inter({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
+const inter = localFont({
+  src: "./fonts/inter-latin.woff2",
+  weight: "400 600",
+  style: "normal",
   variable: "--font-sans",
+  display: "swap",
+  adjustFontFallback: "Arial",
 });
 
 export const metadata: Metadata = {

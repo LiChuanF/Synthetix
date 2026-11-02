@@ -5,7 +5,7 @@
  * screenshotting, so no private/org-specific info leaks into the public repo.
  *
  * Usage: node scripts/capture-sanitized-screenshots.mjs
- * Prereq: app running on localhost:3000, e2e/.auth/admin.json present.
+ * Prereq: app running on localhost:3000, .auth/admin.json present.
  */
 import { chromium } from "playwright";
 import fs from "node:fs";

@@ -317,10 +317,3 @@
 }
 .animate-segment-shimmer { animation: segment-shimmer 1.2s ease-in-out infinite; }
 
-/* ── Electron title bar drag region ──────────────────────────────────────────
-   With titleBarStyle: "hidden" + titleBarOverlay, the top ~40px of the window
-   must be marked draggable so the user can move the window by dragging the
-   header area. Interactive elements inside it opt back out with no-drag. */
-.app-drag { -webkit-app-region: drag; }
-.app-no-drag { -webkit-app-region: no-drag; }
-

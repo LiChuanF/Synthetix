@@ -2,13 +2,13 @@
 /**
  * Synthetix — third-party notices generator.
  *
- * Scans npm, Python, Electron, and hand-curated asset dependencies, then emits:
+ * Scans npm, Python, and hand-curated asset dependencies, then emits:
  *   - public/legal/third-party-notices.json   (page data)
  *   - public/legal/THIRD-PARTY-NOTICES.txt     (download / distribution)
  *
- * The exports in the lower half of this file (scanNpm, scanPython, scanElectron,
- * scanAssets, generateNotices, writeNotices) are reused by build-installer.mjs
- * so the packaged bundle ships identical legal artifacts.
+ * The exports in the lower half of this file (scanNpm, scanPython,
+ * scanAssets, generateNotices, writeNotices) generate the legal artifacts served
+ * by the web app.
  *
  * License hygiene: Unknown / Custom / copyleft (GPL/LGPL/AGPL/MPL) entries are
  * reported. In strict mode (NOTICES_STRICT=1 or { strict: true }) the script
@@ -49,13 +49,6 @@ function isUnknown(lic) {
 
 // ---------- npm scanner ----------
 /**
- * Packages that live in devDependencies but ARE shipped in the distributed app,
- * so they must appear in the notices despite not being runtime `dependencies`.
- * Keep this list minimal — only things physically bundled into the installer.
- */
-const NPM_SHIPPED_DEV_DEPS = new Set(["electron", "electron-builder"]);
-
-/**
  * Build-time-only tooling that leaks into the production dependency closure
  * via transitive `dependencies` but is NOT shipped in the runtime bundle.
  * These produce compiled output (CSS, JS) but the tools themselves don't run
@@ -79,8 +72,7 @@ const NPM_BUILD_TIME_EXCLUDE = new Set([
  *
  * Dev-only tooling (playwright, eslint, vitest, typescript, @types/*, etc.) is
  * excluded because it never ships in the distributed app and carries no
- * distribution obligation. Packages in {@link NPM_SHIPPED_DEV_DEPS} are added
- * back explicitly.
+ * distribution obligation.
  *
  * @param {string} nmRoot        node_modules directory to read package.json from
  * @param {string} [pkgJsonPath] path to the project package.json (roots source)
@@ -92,11 +84,8 @@ export function scanNpm(nmRoot, pkgJsonPath) {
     ? JSON.parse(fs.readFileSync(pkgJsonPath, "utf8"))
     : JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
 
-  // Seed the BFS with production deps + explicitly-shipped dev deps.
-  const roots = new Set([
-    ...Object.keys(rootPkg.dependencies || {}),
-    ...Object.keys(rootPkg.devDependencies || {}).filter((d) => NPM_SHIPPED_DEV_DEPS.has(d)),
-  ]);
+  // Seed the BFS with production dependencies.
+  const roots = new Set(Object.keys(rootPkg.dependencies || {}));
 
   // BFS: resolve each name → its package.json → its runtime dependencies.
   const closure = new Set();
@@ -289,30 +278,6 @@ export function scanPython(requirementsPath) {
   return entries;
 }
 
-// ---------- Electron scanner ----------
-export function scanElectron(nmRoot) {
-  const out = [];
-  for (const name of ["electron", "electron-builder"]) {
-    const pj = path.join(nmRoot, name, "package.json");
-    if (!fs.existsSync(pj)) continue;
-    try {
-      const pkg = JSON.parse(fs.readFileSync(pj, "utf8"));
-      out.push({
-        name: pkg.name,
-        version: pkg.version || "",
-        license: resolveLicenseField(pkg, path.dirname(pj)),
-        homepage: pkg.homepage || undefined,
-        repository: repoUrl(pkg.repository),
-        source: "electron",
-        licenseText: readLicenseText(path.dirname(pj)),
-      });
-    } catch {
-      /* ignore */
-    }
-  }
-  return out;
-}
-
 // ---------- asset scanner ----------
 export function scanAssets(manifestPath) {
   if (!fs.existsSync(manifestPath)) return [];
@@ -341,9 +306,7 @@ export function generateNotices(opts = {}) {
   const python = scanPython(requirementsPath);
   const assets = scanAssets(assetManifest);
 
-  // Global dedup by name across ALL sources. electron/electron-builder are now
-  // included via the npm production-closure scan (NPM_SHIPPED_DEV_DEPS), so no
-  // separate electron scan is needed. Keep first occurrence per name.
+  // Global dedup by name across ALL sources. Keep first occurrence per name.
   const byName = new Map();
   for (const e of [...npm, ...npmBundle, ...python, ...assets]) {
     if (!byName.has(e.name)) byName.set(e.name, e);

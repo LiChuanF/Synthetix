@@ -10,7 +10,7 @@ const nextConfig: NextConfig = {
   // makes Next preserve their full node_modules subtree (including transitive
   // deps) instead of tracing only entry points, which fixes the
   // `Cannot find module 'bindings'` / `'@prisma/client-runtime-utils'`
-  // crashes observed when the packaged Electron app first starts.
+  // crashes observed when the standalone server first starts.
   serverExternalPackages: [
     "@node-rs/jieba",
     "better-sqlite3",

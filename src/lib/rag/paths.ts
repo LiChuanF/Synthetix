@@ -5,9 +5,9 @@
  * RAG_LOCK_ROOT — deliberately OUTSIDE the per-user RAG directory so that
  * a workspace reset cannot delete an active lock.
  *
- * In packaged (Electron) operation, electron/main.ts sets both env vars to
- * absolute paths under the user data directory. In development they default
- * to ./data/rag and ./data/locks/rag relative to cwd.
+ * In packaged/Docker deployments, both env vars are set to absolute paths
+ * under the data directory. In development they default to ./data/rag and
+ * ./data/locks/rag relative to cwd.
  *
  * userId is validated as a single path segment to prevent directory traversal.
  * Python workers read the same env vars (see rag_common.resolve_rag_root).

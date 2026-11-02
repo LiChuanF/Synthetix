@@ -1,92 +1,48 @@
-# Linux image for the Ubuntu intranet deployment.
+# 内网薄构建：每次改完代码，在服务器上执行。
 #
-# Build on a machine that can reach npm/PyPI/PyTorch (the Windows dev box);
-# the resulting image runs with no network access at all. Windows-only build
-# artifacts (node_modules, .venv, dist) are excluded by .dockerignore and are
-# rebuilt here for Linux.
+#   docker build -t synthetix-app:1.1.1 .
+#   SYNTHETIX_VERSION=1.1.1 docker compose up -d --no-build
 #
-# Build context must contain:
-#   offline/docling-models/
-#   offline/tiktoken-cache/
-#   offline/gte-multilingual-base/
-# copied from D:\synthetix-offline.
+# 全程不需要联网：
+#   - FROM synthetix-base 提供 Node + 全部 npm 依赖（含构建期依赖）
+#   - FROM synthetix-app 提供 Python、Docling/tiktoken/GTE 模型和运行时环境
+# 只有 next build 和最后的产物 COPY 会执行，通常 1~3 分钟。
 
-# ---------- 1. Build the Next.js standalone bundle ----------
-FROM node:24-bookworm AS builder
+ARG BASE=synthetix-base:1.1.0
+ARG RUNTIME=synthetix-app:1.1.0
+
+# ---------- 1. 在 Linux 构建底座里编译 ----------
+FROM ${BASE} AS builder
 WORKDIR /app
-# Build machine is behind a slow international link; npmmirror keeps pnpm from
-# timing out (Docker Hub itself is handled by registry-mirrors in daemon.json).
-# pnpm 11 ignores npm_config_registry, so the registry is passed explicitly.
-ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm install -g pnpm@11.15.0 --registry=https://mirrors.cloud.tencent.com/npm/
-# A global rc so every pnpm invocation (including the implicit install that
-# `pnpm build` triggers via verify-deps-before-run) uses the mirror, and so the
-# hoisted linker does not look like a deps mismatch.
-RUN printf 'registry=https://mirrors.cloud.tencent.com/npm/\nnode-linker=hoisted\nverify-deps-before-run=false\nfetch-retries=5\nfetch-retry-mintimeout=10000\nfetch-retry-maxtimeout=120000\nfetch-timeout=300000\n' > /root/.npmrc
-# Prisma's postinstall fetches engines from binaries.prisma.sh, which is
-# unreachable here; npmmirror carries the same all_commits/ layout.
-ENV PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-# Hoisted linker: the standalone output then contains a real node_modules tree
-# instead of pnpm's .pnpm symlink store.
-RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile --config.node-linker=hoisted \
-      --registry=https://mirrors.cloud.tencent.com/npm/
 COPY . .
-# token-core throws at import time when these are missing; build-time only.
-ENV JWT_SECRET=build-only ENCRYPTION_KEY=build-only
-# Called directly instead of `pnpm build`: pnpm re-runs its dependency status
-# check before scripts, which spawns a full install and re-triggers postinstalls.
-RUN npx prisma generate \
+
+# token-core 在 import 时就要求这两个变量；只用于构建，运行时会由
+# deploy/synthetix.env 覆盖。CHECKPOINT_DISABLE 关闭 Prisma 的联网检查。
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    JWT_SECRET=build-only \
+    ENCRYPTION_KEY=build-only \
+    CHECKPOINT_DISABLE=1 \
+    PRISMA_HIDE_UPDATE_MESSAGE=1
+
+# 直接调用 CLI，避免 npx / pnpm 在断网时尝试解析 registry。
+# 重新 generate 可以保证 Prisma Client 的引擎是 Linux 版，并包含最新 schema。
+RUN node node_modules/prisma/build/index.js generate \
  && node scripts/generate-app-metadata.mjs \
  && node node_modules/next/dist/bin/next build
 
-# ---------- 2. Runtime ----------
-FROM python:3.14-slim
-ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PYTHONDONTWRITEBYTECODE=1
-COPY --from=node:24-bookworm-slim /usr/local/bin/node /usr/local/bin/node
-WORKDIR /app
+# ---------- 2. 把产物叠加到运行时底座上 ----------
+FROM ${RUNTIME}
 
-# Python worker dependencies. The CPU torch build avoids pulling ~2GB of CUDA
-# wheels into the image; requirements.txt then leaves that torch satisfied.
-# Torch and torchvision are pinned to matching +cpu builds so neither the
-# extra index nor torchvision's exact-version pin can drag in the CUDA build
-# (hundreds of MB of wheels that are useless here).
-COPY workers/python/requirements.txt ./workers/python/requirements.txt
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --index-url https://download.pytorch.org/whl/cpu \
-      --extra-index-url https://mirrors.cloud.tencent.com/pypi/simple \
-      --timeout 120 --retries 10 \
-      torch==2.14.1+cpu torchvision==0.29.1+cpu \
- && pip install --index-url https://mirrors.cloud.tencent.com/pypi/simple \
-      --timeout 120 --retries 10 \
-      -r workers/python/requirements.txt
+# 先清掉旧版本的构建产物，避免旧文件残留（尤其是被删除的依赖）。
+RUN rm -rf /app/.next /app/node_modules /app/public /app/server.js
 
-# Offline Docling/RapidOCR artifacts, tiktoken cache and the GTE embedding
-# model. Keep these ABOVE the app COPY so a code change does not invalidate
-# this ~1.3GB layer.
-COPY offline/docling-models /opt/synthetix/docling
-COPY offline/tiktoken-cache  /opt/synthetix/tiktoken
-COPY offline/gte-multilingual-base ./models/gte-multilingual-base
-
-# Next.js standalone output (server.js + traced node_modules) and the assets it
-# does not include (static chunks, public/, Python workers, prisma migrations).
+# standalone 自带 server.js、.next 和裁剪后的生产 node_modules。
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
+
+# Python worker 脚本和数据库迁移跟着源码走；Python 依赖和模型仍来自运行时底座。
 COPY --from=builder /app/workers ./workers
 COPY --from=builder /app/prisma ./prisma
-COPY deploy/docker-entrypoint.mjs ./docker-entrypoint.mjs
 
-ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0 \
-    COOKIE_SECURE=false HF_HUB_OFFLINE=1 \
-    DB_PATH=/data DATABASE_URL=file:/data/dev.db \
-    DATA_DIR=/data DOCUMENT_ROOT=/data/documents \
-    RAG_ROOT=/data/rag RAG_LOCK_ROOT=/data/locks/rag \
-    DOCLING_ARTIFACTS_PATH=/opt/synthetix/docling \
-    TIKTOKEN_CACHE_DIR=/opt/synthetix/tiktoken \
-    LOCAL_EMBED_MODEL_PATH=/app/models/gte-multilingual-base \
-    PYTHON_PATH=/usr/local/bin/python PYTHON_DAEMON_ENABLED=true
-
-EXPOSE 3000
-CMD ["node", "docker-entrypoint.mjs"]
+# ENV、EXPOSE、CMD 全部继承自运行时底座，这里不重复声明。

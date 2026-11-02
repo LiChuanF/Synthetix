@@ -17,13 +17,6 @@
 /.next/
 /out/
 
-# production
-/build
-# Windows-installer packaging output (multi-GB bundle — never commit)
-/dist
-# generated Inno Setup script (produced by scripts/build-installer.mjs from the version in package.json)
-packaging/Synthetix.generated.iss
-
 # misc
 .DS_Store
 *.pem
@@ -89,8 +82,6 @@ qa-*.png
 qa-*.mjs
 qa-*.py
 /screenshots/
-e2e/.screenshots/
-e2e/.report/
 # Note: docs/screenshots/ (README product screenshots) is intentionally tracked.
 
 # temp/test files
@@ -159,11 +150,8 @@ litellm-catalog.json
 dev.db-shm
 dev.db-wal
 
-# Playwright local run artifacts
-.playwright-mcp/
-test-results/
-e2e/.auth/
-e2e/.report/
+# screenshot tooling auth state
+.auth/
 
 # transient editor/build scratch files
 *.tmp

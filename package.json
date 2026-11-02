@@ -20,8 +20,7 @@
     "knowledge-graph",
     "self-hosted",
     "lightrag",
-    "local-first",
-    "electron"
+    "local-first"
   ],
   "engines": {
     "node": ">=24.18.0 <25"
@@ -35,26 +34,10 @@
     "typecheck": "tsc --noEmit --incremental false",
     "test": "vitest",
     "test:run": "vitest run",
-    "e2e": "playwright test",
-    "e2e:smoke": "playwright test --grep @smoke",
-    "e2e:full": "playwright test --grep @full",
-    "e2e:lifecycle": "playwright test e2e/document-lifecycle-stress.spec.ts",
-    "e2e:report": "playwright show-report e2e/.report",
-    "electron:dev": "pnpm build && tsc -p electron/tsconfig.json && cross-env-shell ELECTRON_IS_DEV=1 \"electron dist/electron-main/main.js\"",
-    "electron:compile": "tsc -p electron/tsconfig.json",
-    "electron:build": "npm run generate:meta && node scripts/build-electron.mjs",
-    "electron:build:mac": "npm run generate:meta && node scripts/build-electron-mac.mjs",
-    "build-installer:mac": "node scripts/build-installer-mac.mjs",
-    "generate:icns": "node scripts/generate-icns.mjs",
-    "publish": "npm run generate:meta && node scripts/publish-release.mjs",
-    "publish:beta": "npm run generate:meta && node scripts/publish-release.mjs --channel beta",
     "generate:meta": "node scripts/generate-app-metadata.mjs",
-    "verify:versions": "node scripts/verify-version-consistency.mjs",
     "generate:notices": "node scripts/generate-third-party-notices.mjs",
-    "generate:signing-key": "node scripts/generate-signing-key.mjs",
     "backfill:task-identity": "tsx scripts/backfill-async-task-identity.ts"
   },
-  "main": "dist/electron-main/main.js",
   "dependencies": {
     "@base-ui/react": "^1.4.1",
     "@node-rs/jieba": "^2.0.1",

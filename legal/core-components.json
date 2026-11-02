@@ -61,14 +61,5 @@
       "en": "Force-directed graph layout for the knowledge graph",
       "zh": "知识图谱的力导向图布局"
     }
-  },
-  {
-    "name": "Electron",
-    "package": "electron",
-    "category": "platform",
-    "description": {
-      "en": "Cross-platform desktop shell (Windows installer)",
-      "zh": "跨平台桌面外壳（Windows 安装包）"
-    }
   }
 ]

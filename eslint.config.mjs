@@ -19,13 +19,11 @@ const eslintConfig = defineConfig([
     "tmp-chrome-profile/**",
     "data/**",
     "workers/python/__pycache__/**",
-    "e2e/**",
     "src/__tests__/**",
-    "packaging/**",
     "*.cjs",
   ]),
   {
-    files: ["scripts/**/*.{js,mjs}", "electron/**/*.ts"],
+    files: ["scripts/**/*.{js,mjs}"],
     rules: {
       "@typescript-eslint/no-require-imports": "off",
       "@typescript-eslint/no-explicit-any": "off",

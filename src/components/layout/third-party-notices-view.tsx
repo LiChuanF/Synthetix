@@ -23,7 +23,7 @@ type CoreComponent = {
   description: { en: string; zh: string };
 };
 
-const SOURCES = ["npm", "python", "electron", "asset", "runtime"] as const;
+const SOURCES = ["npm", "python", "asset", "runtime"] as const;
 
 export function ThirdPartyNoticesView() {
   const { t, locale } = useLocale();

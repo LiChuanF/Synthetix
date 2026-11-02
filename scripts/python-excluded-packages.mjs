@@ -2,11 +2,8 @@
  * Shared list of Python packages that are excluded from the distributed app
  * AND from the third-party notices display.
  *
- * Single source of truth — imported by both:
- *   - scripts/build-installer.mjs   (physically deletes them from dist/app)
+ * Single source of truth — imported by:
  *   - scripts/generate-third-party-notices.mjs (filters them from the notices)
- *
- * Keeping these in sync means the notices always reflect what actually ships.
  *
  * Categories:
  *   - cloud SDKs / dev tooling never imported by any worker

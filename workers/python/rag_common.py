@@ -13,8 +13,8 @@ import glob as glob_mod
 # All Python workers MUST use these helpers instead of hardcoding
 # os.path.join("data", "rag", user_id). Node (src/lib/rag/paths.ts) reads the
 # same RAG_ROOT / RAG_LOCK_ROOT env vars so both runtimes agree on the absolute
-# workspace location. Electron sets both vars to <userData>/rag and
-# <userData>/locks/rag respectively.
+# workspace location. The Docker deployment sets both vars to /data/rag and
+# /data/locks/rag respectively.
 
 
 def resolve_rag_root() -> str:

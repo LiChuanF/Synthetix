@@ -16,12 +16,9 @@ tmp
 .worktrees
 
 # Dev-only trees
-e2e
 prototype
 docs
 coverage
-test-results
-playwright-report
 
 # Secrets: the runtime image gets them from deploy/synthetix.env
 .env
