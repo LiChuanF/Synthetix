@@ -3,15 +3,13 @@
 #   docker build -t synthetix-app:1.1.1 .
 #   SYNTHETIX_VERSION=1.1.1 docker compose up -d --no-build
 #
-# 全程不需要联网：
-#   - FROM synthetix-base 提供 Node + 全部 npm 依赖（含构建期依赖）
-#   - FROM synthetix-app 提供 Python、Docling/tiktoken/GTE 模型和运行时环境
+# 全程不需要联网：FROM synthetix-omni 同时提供 Node、全部 npm 依赖、
+# Python、Docling/tiktoken/GTE 模型和运行时环境。
 # 只有 next build 和最后的产物 COPY 会执行，通常 1~3 分钟。
 
-ARG BASE=synthetix-base:1.1.0
-ARG RUNTIME=synthetix-app:1.1.0
+ARG BASE=synthetix-omni:1.1.0
 
-# ---------- 1. 在 Linux 构建底座里编译 ----------
+# ---------- 1. 在单底座里编译 ----------
 FROM ${BASE} AS builder
 WORKDIR /app
 COPY . .
@@ -30,19 +28,29 @@ RUN node node_modules/prisma/build/index.js generate \
  && node scripts/generate-app-metadata.mjs \
  && node node_modules/next/dist/bin/next build
 
-# ---------- 2. 把产物叠加到运行时底座上 ----------
-FROM ${RUNTIME}
+# ---------- 2. 把产物叠加到同一个底座上 ----------
+FROM ${BASE}
 
-# 先清掉旧版本的构建产物，避免旧文件残留（尤其是被删除的依赖）。
-RUN rm -rf /app/.next /app/node_modules /app/public /app/server.js
+# 只清构建产物；保留底座里的 /app/node_modules 和 /app/models。
+# 底座 node_modules 就是构建时用的那一份，删掉再拷 standalone 的裁剪版
+# 只会让每个版本多背 1GB 多。
+RUN rm -rf /app/.next /app/public /app/server.js
 
-# standalone 自带 server.js、.next 和裁剪后的生产 node_modules。
-COPY --from=builder /app/.next/standalone ./
+# Next 16 的 standalone 会把整个项目根目录都复制进去（含 offline/ 和
+# models/，约 1.2GB），但这两份底座里已经有：模型在 /app/models，
+# Docling/tiktoken 在 /opt/synthetix。用 tar 叠加时排除它们；
+# node_modules 则合并覆盖（standalone 里有 Turbopack 的哈希别名包）。
+RUN --mount=type=bind,from=builder,source=/app/.next/standalone,target=/standalone \
+    tar -C /standalone --exclude=./models --exclude=./offline -cf - . \
+  | tar -C /app -xf -
+
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 
-# Python worker 脚本和数据库迁移跟着源码走；Python 依赖和模型仍来自运行时底座。
+# Python worker 脚本、数据库迁移和入口脚本跟着源码走；
+# Python 依赖和模型仍来自底座。
 COPY --from=builder /app/workers ./workers
 COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/deploy/docker-entrypoint.mjs ./docker-entrypoint.mjs
 
-# ENV、EXPOSE、CMD 全部继承自运行时底座，这里不重复声明。
+# ENV、EXPOSE、CMD 全部继承自底座，这里不重复声明。

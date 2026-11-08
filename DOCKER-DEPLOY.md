@@ -1,7 +1,7 @@
 # Synthetix Docker 部署教程（内网离线）
 
-本文档对应仓库根目录的 `Dockerfile`、`Dockerfile.base`、`Dockerfile.full`、
-`.dockerignore`、`docker-compose.yml` 和 `deploy/` 目录。
+本文档对应仓库根目录的 `Dockerfile`、`Dockerfile.omni`、`.dockerignore`、
+`docker-compose.yml` 和 `deploy/` 目录。
 
 目标环境：
 
@@ -13,7 +13,7 @@
 
 ---
 
-## 0. 先理解：为什么镜像要分三个
+## 0. 先理解：镜像为什么分成两层
 
 镜像 = **已经编译好的代码 + 依赖**。你在 Win 上改源码，容器里的代码不会变，
 因为容器跑的是镜像里的 `.next`，不是你的源码。所以改完代码必须重新编译。
@@ -23,17 +23,15 @@
 
 | 镜像 | 在哪里构建 | 里面有什么 | 什么时候需要重建 |
 |---|---|---|---|
-| `synthetix-app:1.1.0` | 外网，`Dockerfile.full` | Node + Python + Docling/tiktoken/GTE 模型 + 旧版代码 | Python 依赖、模型、Node/Python 大版本变化时 |
-| `synthetix-base:1.1.0` | 外网，`Dockerfile.base` | Node + 全部 npm 依赖（含 typescript/tailwind 等构建期依赖） | `package.json` / `pnpm-lock.yaml` 变化时 |
+| `synthetix-omni:1.1.0` | 外网，`Dockerfile.omni` | Node + 全部 npm 依赖 + Python + Docling/tiktoken/GTE 模型 | `package.json` / `pnpm-lock.yaml`、Python 依赖、模型、Node/Python 大版本变化时 |
 | `synthetix-app:1.1.x` | **内网，`Dockerfile`** | 只有新编译出来的 `.next` 和源码 | **每次改完业务代码** |
 
 内网的薄构建（`Dockerfile`）只做三件事：
 
 ```
-FROM synthetix-base:1.1.0     ← 拿到 Node 和全部 npm 依赖
+FROM synthetix-omni:1.1.0     ← 拿到 Node、全部 npm 依赖、Python、模型
 COPY 源码
 next build                     ← 唯一需要执行的编译
-FROM synthetix-app:1.1.0       ← 拿到 Python、模型、运行时环境
 COPY 新编译的 .next / public / workers / prisma
 ```
 
@@ -48,11 +46,10 @@ COPY 新编译的 .next / public / workers / prisma
 
 ## 1. 外网一次性准备
 
-### 1.1 准备 `offline/` 资产（只有重建运行时底座时才需要）
+### 1.1 准备 `offline/` 资产
 
-运行时底座里的 Docling 模型、tiktoken 缓存和 GTE 向量模型来自
-`D:\synthetix-offline`。如果你已经有 `synthetix-app:1.1.0` 镜像，这一步已经做过了，
-可以跳过。
+底座里的 Docling 模型、tiktoken 缓存和 GTE 向量模型来自
+`D:\synthetix-offline`：
 
 ```powershell
 New-Item -ItemType Directory -Force D:\Project\Synthetix\offline | Out-Null
@@ -65,58 +62,34 @@ Copy-Item -Recurse D:\synthetix-offline\gte-multilingual-base D:\Project\Synthet
 `offline/` 约 900MB，已加入 `.gitignore`，不要提交。
 不要用 `mklink /J` 目录联接，Docker 构建上下文对 junction 处理不可靠。
 
-### 1.2 构建运行时底座（已有 `synthetix-app:1.1.0` 就跳过）
+### 1.2 构建单底座
 
 ```powershell
 cd D:\Project\Synthetix
-docker build -f Dockerfile.full -t synthetix-app:1.1.0 .
+docker build -f Dockerfile.omni -t synthetix-omni:1.1.0 .
 ```
 
-首次约 10~30 分钟。成功后确认：
+首次约 20~60 分钟（要装 CPU torch、Docling 依赖、完整 npm 依赖，
+主要取决于下载速度）。成功后确认：
 
 ```powershell
-docker images synthetix-app
-# synthetix-app   1.1.0   ...   约 6.4GB
+docker images synthetix-omni
+# synthetix-omni   1.1.0   ...   约 6.3GB
 ```
 
-> 这个镜像已经在你的服务器上了。**不要用新版本号覆盖它**，它是内网薄构建的
-> `FROM` 底座。以后只有 Python 依赖/模型变化时才需要重建它。
+> 这个镜像就是内网薄构建的 `FROM` 底座。**不要用新版本号覆盖它**。
+> 以后只有 Python 依赖/模型/npm 依赖变化时才需要重建它。
 
-### 1.3 构建构建底座
+### 1.3 导出并带进内网
 
 ```powershell
-docker build -f Dockerfile.base -t synthetix-base:1.1.0 .
+docker save synthetix-omni:1.1.0 -o synthetix-omni-1.1.0.tar
 ```
 
-它只做 `pnpm install`，不编译业务代码。约 4.7GB（Node 镜像 + 完整 node_modules）。
-这是这次需要新带进内网的唯一大文件。
+用 U 盘 / 共享盘 / scp 把 `synthetix-omni-1.1.0.tar` 放到服务器 `/srv/synthetix/`。
+导出文件约 **1.7GB**（Docker 保存时镜像层本身就是压缩的），不需要再 gzip。
 
-成功后确认：
-
-```powershell
-docker images synthetix-base
-# synthetix-base   1.1.0   ...   约 4.7GB
-```
-
-> 如果 `package.json` / `pnpm-lock.yaml` 以后有变化，重新执行这条命令并换一个 tag
-> （例如 `1.1.1`），同时把 `Dockerfile` 里的 `ARG BASE` 改成新 tag。
-
-### 1.4 导出并带进内网
-
-运行时底座已经在服务器上，只需要导出构建底座：
-
-```powershell
-docker save synthetix-base:1.1.0 -o synthetix-base-1.1.0.tar
-```
-
-用 U 盘 / 共享盘 / scp 把 `synthetix-base-1.1.0.tar` 放到服务器 `/srv/synthetix/`。
-建议先压缩（约 2GB 左右）。
-
-如果你要在一台全新的服务器上从零部署，两个镜像一起导出：
-
-```powershell
-docker save synthetix-app:1.1.0 synthetix-base:1.1.0 -o synthetix-images-1.1.0.tar
-```
+只需要带这一个 tar，不需要再带别的底座或应用镜像。
 
 ---
 
@@ -126,12 +99,10 @@ docker save synthetix-app:1.1.0 synthetix-base:1.1.0 -o synthetix-images-1.1.0.t
 
 ```bash
 cd /srv/synthetix
-docker load -i synthetix-base-1.1.0.tar
-# 全新服务器还需要:
-# docker load -i synthetix-app-1.1.0.tar
+docker load -i synthetix-omni-1.1.0.tar
 
 docker images | grep synthetix
-# 应该能看到 synthetix-app:1.1.0 和 synthetix-base:1.1.0
+# 应该能看到 synthetix-omni:1.1.0
 ```
 
 ### 2.2 建目录
@@ -162,8 +133,8 @@ deploy/synthetix.env
 
 说明：
 
-- `node_modules` **不用带**，`synthetix-base` 里已经有 Linux 版。
-- `offline` **不用带**，模型已经在 `synthetix-app:1.1.0` 里。
+- `node_modules` **不用带**，`synthetix-omni` 里已经有 Linux 版。
+- `offline` **不用带**，模型已经在 `synthetix-omni` 里。
 - 源码本身只有几十 MB，用共享盘 / WinSCP / scp 都很快；实在不行 U 盘也可以。
 - `deploy/synthetix.env` 是服务器本地密钥文件，同步时**不要覆盖或删除**。
 - `src/app/fonts/` 下的两个 woff2 必须一起同步过去，否则内网 `next build`
@@ -203,7 +174,7 @@ docker build -t synthetix-app:1.1.1 .
 
 注意：
 
-- **不要**打成 `synthetix-app:1.1.0`，那个 tag 是运行时底座。
+- 应用镜像从 `1.1.1` 开始编号；`1.1.0` 留给底座 `synthetix-omni:1.1.0`。
 - 构建过程不需要联网。正常情况下 1~3 分钟。
 - 如果卡在 `next build` 并报 `Failed to fetch ... from Google Fonts`，
   说明 `src/app/fonts/` 没同步过去，见 §8.2。
@@ -308,8 +279,8 @@ SYNTHETIX_VERSION=1.1.1 docker compose up -d --no-build
 
 ### 版本号怎么起
 
-- 每次构建换一个新 tag（`1.1.1`、`1.1.2`、`1.1.3`…），方便回滚。
-- `1.1.0` 永远留给运行时底座，不要覆盖。
+- 底座固定 `synthetix-omni:1.1.0`，不要覆盖。
+- 每次应用构建换一个新 tag（`1.1.1`、`1.1.2`、`1.1.3`…），方便回滚。
 - 想用日期也行：`20261029-1`，只要 compose 里的 `SYNTHETIX_VERSION` 和
   `docker build -t` 的 tag 一致。
 
@@ -324,24 +295,22 @@ SYNTHETIX_VERSION=1.1.1 docker compose up -d --no-build
 
 | 变化 | 要重建什么 | 命令 |
 |---|---|---|
-| `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml` | 构建底座 | `docker build -f Dockerfile.base -t synthetix-base:1.1.1 .` |
-| `workers/python/requirements.txt`、Docling/tiktoken/GTE 模型 | 运行时底座 | `docker build -f Dockerfile.full -t synthetix-app:1.1.1 .` |
-| Node / Python 大版本 | 两个底座 | 先改 `Dockerfile.base` / `Dockerfile.full` 的 `FROM`，再分别构建 |
+| `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml` | 单底座 | `docker build -f Dockerfile.omni -t synthetix-omni:1.1.1 .` |
+| `workers/python/requirements.txt`、Docling/tiktoken/GTE 模型 | 单底座 | 同上 |
+| Node / Python 大版本 | 单底座 | 先改 `Dockerfile.omni` 的 `FROM`，再构建 |
 | 只改业务代码 | **什么都不用重建** | 内网 `docker build -t synthetix-app:<新tag> .` |
 
 重建底座后，把新镜像 `docker save` 带进内网，并修改内网 `Dockerfile` 顶部的：
 
 ```dockerfile
-ARG BASE=synthetix-base:1.1.0
-ARG RUNTIME=synthetix-app:1.1.0
+ARG BASE=synthetix-omni:1.1.0
 ```
 
 或者构建时临时覆盖：
 
 ```bash
 docker build \
-  --build-arg BASE=synthetix-base:1.1.1 \
-  --build-arg RUNTIME=synthetix-app:1.1.1 \
+  --build-arg BASE=synthetix-omni:1.1.1 \
   -t synthetix-app:1.1.2 .
 ```
 
@@ -400,7 +369,7 @@ docker compose start app
 | `JWT_SECRET` | JWT 签名密钥，**必须固定**，否则所有人登录失效 |
 | `ENCRYPTION_KEY` | 模型 API Key 等敏感字段的加密密钥，**必须固定**，否则已存密钥无法解密 |
 
-其余运行时变量由运行时底座镜像的 `ENV` 提供（`docker-compose.yml` 不重复声明），
+其余运行时变量由底座镜像的 `ENV` 提供（`docker-compose.yml` 不重复声明），
 需要临时覆盖时在 `deploy/synthetix.env` 里追加即可：
 
 | 变量 | 值 | 说明 |
@@ -419,13 +388,13 @@ docker compose start app
 
 ## 8. 常见问题
 
-### 8.1 `failed to solve: synthetix-base:1.1.0: not found`
+### 8.1 `failed to solve: synthetix-omni:1.1.0: not found`
 
-构建底座没导入，或者 tag 不一致：
+底座没导入，或者 tag 不一致：
 
 ```bash
 docker images | grep synthetix
-docker load -i /srv/synthetix/synthetix-base-1.1.0.tar
+docker load -i /srv/synthetix/synthetix-omni-1.1.0.tar
 ```
 
 ### 8.2 `Failed to fetch ... from Google Fonts`
@@ -518,28 +487,31 @@ docker compose logs app
 
 ### 8.8 提示缺少 Python 模块
 
-说明运行时底座构建时 `pip install` 没完全成功。这属于底座问题，需要回外网：
+说明底座构建时 `pip install` 没完全成功。这属于底座问题，需要回外网重建：
 
 ```powershell
-docker build -f Dockerfile.full -t synthetix-app:1.1.1 .
+docker build -f Dockerfile.omni -t synthetix-omni:1.1.1 .
 ```
 
-带进内网后，用 `--build-arg RUNTIME=synthetix-app:1.1.1` 重新薄构建。
+带进内网后：
+
+```bash
+docker build --build-arg BASE=synthetix-omni:1.1.1 -t synthetix-app:1.1.2 .
+```
 
 ### 8.9 想确认镜像里到底有什么
 
 ```bash
-docker run --rm synthetix-app:1.1.0 sh -c "ls /app && ls /opt/synthetix && /usr/local/bin/python --version"
-docker run --rm synthetix-base:1.1.0 sh -c "ls /app/node_modules | head"
+docker run --rm synthetix-omni:1.1.0 sh -c "ls /app && ls /opt/synthetix && /usr/local/bin/python --version && node --version"
+docker run --rm synthetix-omni:1.1.0 sh -c "ls /app/node_modules | head"
 ```
 
 ### 8.10 磁盘空间
 
-- `synthetix-app:1.1.0` 约 6.4GB（运行时底座）
-- `synthetix-base:1.1.0` 约 4.7GB（构建底座）
-- 每个内网版本镜像只多出约 100~200MB（共享底座层）
-
-旧版本镜像不要急着删，回滚要用。确认稳定后再 `docker rmi synthetix-app:<旧tag>`。
+- `synthetix-omni:1.1.0` 约 6.3GB（单底座）；`docker save` 出来的 tar 约 1.7GB。
+- 每个内网版本镜像在 `docker images` 里显示约 6.4GB，但**新增的只有约 100MB**；
+  底座层是共享的，`docker system df` 看到的实际占用不会按版本数线性增长。
+- 旧版本镜像不要急着删，回滚要用。确认稳定后再 `docker rmi synthetix-app:<旧tag>`。
 
 ---
 
@@ -547,15 +519,14 @@ docker run --rm synthetix-base:1.1.0 sh -c "ls /app/node_modules | head"
 
 | 文件 | 说明 |
 |---|---|
-| `Dockerfile` | **内网薄构建**：FROM 两个底座 → `next build` → 复制产物 |
-| `Dockerfile.base` | **外网构建底座**：Node + 全部 npm 依赖 |
-| `Dockerfile.full` | **外网运行时底座**：Node + Python + 模型 + 完整应用 |
+| `Dockerfile` | **内网薄构建**：FROM 单底座 → `next build` → 复制产物 |
+| `Dockerfile.omni` | **外网单底座**：Node + 全部 npm 依赖 + Python + 模型 |
 | `docker-compose.yml` | 只跑 `app` 一个容器；不含 nginx / registry |
 | `.dockerignore` | 排除 Windows 产物、密钥、无关目录 |
 | `src/app/fonts/` | Inter / Plus Jakarta Sans 本地字体，**内网构建必需，不能删** |
 | `deploy/docker-entrypoint.mjs` | 启动前应用数据库迁移 |
 | `deploy/synthetix.env.example` | 密钥模板 |
-| `offline/` | 只在外网构建 `Dockerfile.full` 时需要，不提交、不带进内网 |
+| `offline/` | 只在外网构建 `Dockerfile.omni` 时需要，不提交、不带进内网 |
 
 ---
 
@@ -564,7 +535,8 @@ docker run --rm synthetix-base:1.1.0 sh -c "ls /app/node_modules | head"
 | | 旧流程 | 现在 |
 |---|---|---|
 | 每次改代码 | 外网重打完整镜像，U 盘搬约 2.2~6GB | **内网 `docker build`，1~3 分钟** |
-| 镜像传输 | 每个版本都传 | 只传一次 `synthetix-base`（约 4.7GB） |
+| 镜像传输 | 每个版本都传 | 只传一次 `synthetix-omni`（tar 约 1.7GB） |
+| 底座数量 | 两个（运行时 + 构建） | **一个** |
 | nginx | 曾内置 | 已删除，浏览器直连 3000 |
 | registry | 可选 | 已删除，不需要 |
 | 内网依赖 | 每次重新 install | 底座里已有，完全离线 |

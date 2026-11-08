@@ -1,0 +1,84 @@
+# 单底座：外网构建一次，之后内网只做薄构建。
+#
+# 内含：
+#   - Python 3.14 + CPU torch + Docling 等 worker 依赖
+#   - Docling / tiktoken / GTE 离线模型
+#   - Node 24
+#   - 项目全部 npm 依赖（含 typescript / tailwind 等构建期依赖）
+#
+# 构建（外网，只需一次）：
+#   docker build -f Dockerfile.omni -t synthetix-omni:1.1.0 .
+# 导出：
+#   docker save synthetix-omni:1.1.0 -o synthetix-omni-1.1.0.tar
+# 导入（内网服务器）：
+#   docker load -i synthetix-omni-1.1.0.tar
+#
+# 只有 package.json / pnpm-lock.yaml / Node / Python 依赖 / 模型变化时，
+# 才需要重新构建并重新带入。改业务代码不需要动它。
+
+# ---------- 1. 完整 npm 依赖 ----------
+# 钉住 digest：这台构建机的 BuildKit 缓存里已经有这些层，
+# 用 tag 会解析到新 digest，导致几 GB 的重新下载。
+# 换机器重建时如果报 manifest unknown，把 @sha256:... 去掉、改用 tag 即可。
+FROM node:24-bookworm@sha256:925de64a85319052d6971ae81ef2417da956e8a3a2c4a0fac732327970f017f5 AS builddeps
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# 外网构建机访问 npm 较慢，使用国内镜像；pnpm 11 不认 npm_config_registry，
+# 所以显式传 --registry，并写入全局 .npmrc 供隐式调用使用。
+RUN npm install -g pnpm@11.15.0 --registry=https://mirrors.cloud.tencent.com/npm/
+RUN printf 'registry=https://mirrors.cloud.tencent.com/npm/\nnode-linker=hoisted\nverify-deps-before-run=false\nfetch-retries=5\nfetch-retry-mintimeout=10000\nfetch-retry-maxtimeout=120000\nfetch-timeout=300000\n' > /root/.npmrc
+
+# Prisma 的 postinstall 会从 binaries.prisma.sh 下载引擎；npmmirror 有同样的目录结构。
+ENV PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+
+# hoisted 布局：生成的真实 node_modules 树可以直接被内网薄构建复用。
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile --config.node-linker=hoisted \
+      --registry=https://mirrors.cloud.tencent.com/npm/
+
+# 说明：这里故意不设置 NODE_ENV=production，否则 pnpm 会跳过 devDependencies，
+# 内网 next build 会缺 typescript / tailwind 等构建期包。
+
+# ---------- 2. 运行时 + 构建依赖合体 ----------
+FROM python:3.14-slim@sha256:930e1abba7c4e8f96ed93e8012c35d174d7732752731bbd5e8e757d7ec6f3966
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PYTHONDONTWRITEBYTECODE=1
+# 直接从完整 Node 镜像里拿同一个 node 二进制，避免再拉一个 `-slim` 镜像。
+COPY --from=node:24-bookworm@sha256:925de64a85319052d6971ae81ef2417da956e8a3a2c4a0fac732327970f017f5 /usr/local/bin/node /usr/local/bin/node
+WORKDIR /app
+
+# Python worker 依赖。CPU torch 避免把约 2GB 的 CUDA wheel 拉进来；
+# torch 和 torchvision 都钉在 +cpu 版本，防止互相拖入 CUDA 版本。
+COPY workers/python/requirements.txt ./workers/python/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --index-url https://download.pytorch.org/whl/cpu \
+      --extra-index-url https://mirrors.cloud.tencent.com/pypi/simple \
+      --timeout 120 --retries 10 \
+      torch==2.14.1+cpu torchvision==0.29.1+cpu \
+ && pip install --index-url https://mirrors.cloud.tencent.com/pypi/simple \
+      --timeout 120 --retries 10 \
+      -r workers/python/requirements.txt
+
+# 离线 Docling/RapidOCR 产物、tiktoken 缓存和 GTE 向量模型。
+# 放在业务代码 COPY 之前，改代码不会让这一层失效。
+COPY offline/docling-models /opt/synthetix/docling
+COPY offline/tiktoken-cache  /opt/synthetix/tiktoken
+COPY offline/gte-multilingual-base ./models/gte-multilingual-base
+
+# 完整 npm 依赖（含构建期依赖），供内网 next build 使用。
+COPY --from=builddeps /app/node_modules ./node_modules
+
+ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0 \
+    COOKIE_SECURE=false HF_HUB_OFFLINE=1 \
+    DB_PATH=/data DATABASE_URL=file:/data/dev.db \
+    DATA_DIR=/data DOCUMENT_ROOT=/data/documents \
+    RAG_ROOT=/data/rag RAG_LOCK_ROOT=/data/locks/rag \
+    DOCLING_ARTIFACTS_PATH=/opt/synthetix/docling \
+    TIKTOKEN_CACHE_DIR=/opt/synthetix/tiktoken \
+    LOCAL_EMBED_MODEL_PATH=/app/models/gte-multilingual-base \
+    PYTHON_PATH=/usr/local/bin/python PYTHON_DAEMON_ENABLED=true
+
+EXPOSE 3000
+CMD ["node", "docker-entrypoint.mjs"]

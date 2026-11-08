@@ -141,6 +141,11 @@ embeddings.bin
 
 # Docker build staging (offline models / caches — multi-GB, carried separately)
 /offline/
+
+# Docker image tarballs (multi-GB, carried via USB / shared drive)
+/synthetix-omni-*.tar
+/synthetix-omni-*.tar.gz
+/synthetix-app-*.tar
 /deploy/synthetix.env
 
 # LiteLLM model reference catalog (large, regenerable)

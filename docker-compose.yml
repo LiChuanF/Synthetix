@@ -1,13 +1,11 @@
 # 内网 Ubuntu 服务器部署。
 #
-# 镜像分三层，只有第一次需要从外网带进来：
-#   synthetix-app:1.1.0    运行时底座：Node + Python + 模型 + 现有构建产物
-#   synthetix-base:1.1.0   构建底座：Node + 全部 npm 依赖（含构建期依赖）
+# 镜像分两层，只有第一层需要从外网带进来：
+#   synthetix-omni:1.1.0   单底座：Node + 全部 npm 依赖 + Python + 模型
 #   synthetix-app:<新版本>  内网 docker build 出来的应用镜像（薄薄一层代码）
 #
 # 首次在服务器上执行：
-#   docker load -i synthetix-app-1.1.0.tar
-#   docker load -i synthetix-base-1.1.0.tar
+#   docker load -i synthetix-omni-1.1.0.tar
 #   把源码放到本目录（不含 node_modules/.next/offline）
 #   cp deploy/synthetix.env.example deploy/synthetix.env   # 然后填入密钥
 #   docker build -t synthetix-app:1.1.1 .
@@ -27,7 +25,7 @@
 name: synthetix
 
 # 运行时环境变量(PORT、数据目录、COOKIE_SECURE、模型路径等)已由
-# 运行时底座镜像的 ENV 写死,这里不再重复。
+# 底座镜像的 ENV 写死,这里不再重复。
 # deploy/synthetix.env 只放运行时注入的密钥。
 
 services:
@@ -36,7 +34,7 @@ services:
     image: ${SYNTHETIX_IMAGE:-synthetix-app}:${SYNTHETIX_VERSION:-1.1.1}
     build:
       context: .
-      # 薄构建：FROM synthetix-base + FROM synthetix-app，完全离线。
+      # 薄构建：FROM synthetix-omni，完全离线。
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
