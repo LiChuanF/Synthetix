@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { buildFacilitatorPrompt } from "@/lib/prompts/builders/facilitator";
-import { buildDiagramPrompts } from "@/lib/prompts/builders/diagram";
 import { buildWritingContext } from "@/lib/prompts/builders/writing-context";
 
 describe("prompt skill builders", () => {
@@ -46,49 +45,25 @@ describe("prompt skill builders", () => {
     expect(prompt).toContain("D. 其他");
   });
 
-  it("does not include diagram syntax for ordinary writing sections", () => {
-    const prompt = buildWritingContext("en", { needsDiagram: false, isParentSection: false });
+  it("does not include diagram or reference-retrieval instructions", () => {
+    const prompt = buildWritingContext("en", { isParentSection: false });
 
     expect(prompt).not.toContain("DIAGRAM_REQUEST");
+    expect(prompt).not.toContain("Reference handling");
     expect(prompt).toContain("leaf section");
-  });
-
-  it("includes diagram syntax only when requested by section context", () => {
-    const prompt = buildWritingContext("en", { needsDiagram: true, isParentSection: false });
-
-    expect(prompt).toContain("DIAGRAM_REQUEST");
-    expect(prompt).toContain("leaf section");
-  });
-
-  it("describes topology diagram requests without forcing flow arrows", () => {
-    const prompt = buildWritingContext("en", { needsDiagram: true, isParentSection: false });
-
-    expect(prompt).toContain("relationships=<");
-    expect(prompt).toContain("groups=<");
-    expect(prompt).toContain("boundaries=<");
-    expect(prompt).not.toContain("flows=<comma-separated relationships using ->>");
-  });
-
-  it("lets architecture diagrams use containers without requiring every edge to be a flow", () => {
-    const prompts = buildDiagramPrompts("en");
-
-    expect(prompts.create).toContain("For architecture, deployment, and topology diagrams");
-    expect(prompts.create).toContain("containers");
-    expect(prompts.create).not.toContain("Every arrow needs a meaningful flow type and label.");
   });
 
   it("uses parent overview rules for parent sections", () => {
-    const prompt = buildWritingContext("en", { needsDiagram: false, isParentSection: true });
+    const prompt = buildWritingContext("en", { isParentSection: true });
 
     expect(prompt).toContain("child subsections");
     expect(prompt).not.toContain("leaf section");
   });
 
   it("builds localized Chinese writing prompts from the same skill set", () => {
-    const prompt = buildWritingContext("zh-CN", { needsDiagram: true, isParentSection: true });
+    const prompt = buildWritingContext("zh-CN", { isParentSection: true });
 
-    expect(prompt).toContain("图表语法");
+    expect(prompt).not.toContain("图表语法");
     expect(prompt).toContain("子章节");
-    expect(prompt).toContain("参考资料处理");
   });
 });

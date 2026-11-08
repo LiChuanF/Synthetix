@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
 import { describe, it, expect } from "vitest";
 import { getLocalizedError } from "@/lib/i18n/client-errors";
 import en from "@/lib/i18n/locales/en";
@@ -35,7 +33,7 @@ describe("API error localization", () => {
       ).toBe("Could not save provider");
     });
 
-    it("documents upload failures use a localized fallback instead of raw server English", () => {
+    it("document-style failures use a localized fallback instead of raw server English", () => {
       const serverEnglish = "Virus scanner rejected this upload";
       const localized = getLocalizedError(
         { error: serverEnglish },
@@ -45,15 +43,6 @@ describe("API error localization", () => {
 
       expect(localized).toBe(zhCN.documents.upload.uploadFailed);
       expect(localized).not.toContain(serverEnglish);
-
-      const pageSource = fs.readFileSync(
-        path.resolve(process.cwd(), "src/app/(dashboard)/documents/page.tsx"),
-        "utf8",
-      );
-      expect(pageSource).toContain(
-        "getLocalizedError(data, t.errors, t.documents.upload.uploadFailed)",
-      );
-      expect(pageSource).not.toMatch(/error:\s*data\.error/);
     });
 
     it("falls back to unknown for null/undefined data", () => {

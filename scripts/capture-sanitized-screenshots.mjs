@@ -110,18 +110,6 @@ async function captureLocale(browser, locale) {
 
   // --- Simple pages ---
   await shoot("dashboard", "/", { wait: 1500 });
-  await shoot("library", "/library", { wait: 1500 });
-  await shoot("search", "/search", {
-    wait: 0,
-    after: async (p) => {
-      const input = p.getByPlaceholder(/Search documents|搜索|Search/i).first();
-      await input.fill("精益创业").catch(() => {});
-      await p.getByRole("button", { name: /Search|搜索/i }).last().click().catch(() => {});
-      await p.waitForTimeout(1800);
-    },
-  });
-  await shoot("wiki", "/wiki", { wait: 1500 });
-  await shoot("topology", "/topology", { wait: 1800 });
 
   // --- Brainstorm: open a session ---
   await shoot("brainstorm", "/brainstorm", {

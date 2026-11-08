@@ -135,16 +135,14 @@ You receive: the document's requirements + ONE parent node (its "num", title, sc
    - "description": one-sentence scope
    - "keyPoints": [2-4 core writing points]
    - "estimatedWords": target word count
-   - "writingRequirements": concise hidden drafting instruction (coverage, angle, boundaries, style, diagram needs)
-   - "retrievalQuery": a knowledge-base retrieval query string
-   - "referenceHints": [entity / standard / framework keywords]
+   - "writingRequirements": concise hidden drafting instruction (coverage, angle, boundaries, style)
 5. Do NOT include the parent node itself in the output. Output only its children.
 
 ## Output JSON Schema
 Output JSON only (no other text):
 {
   "sections": [
-    { "num": "1.1", "title": "Child Title", "description": "Scope", "keyPoints": ["Point 1","Point 2"], "estimatedWords": 500, "writingRequirements": "Hidden drafting instruction", "retrievalQuery": "Search query", "referenceHints": ["keyword"] }
+    { "num": "1.1", "title": "Child Title", "description": "Scope", "keyPoints": ["Point 1","Point 2"], "estimatedWords": 500, "writingRequirements": "Hidden drafting instruction" }
   ]
 }`;
 
@@ -163,16 +161,14 @@ const ENRICHMENT_PROMPT_ZH = `你是专业的文档架构师。将文档大纲�
    - "description"：一句话描述范围
    - "keyPoints"：[2-4 个核心写作要点]
    - "estimatedWords"：目标字数
-   - "writingRequirements"：简洁的隐藏撰写指令（覆盖范围、论述角度、边界、风格、图表需求）
-   - "retrievalQuery"：知识库检索查询
-   - "referenceHints"：[实体/标准/框架关键词]
+   - "writingRequirements"：简洁的隐藏撰写指令（覆盖范围、论述角度、边界、风格）
 5. 输出中不要包含父节点本身，只输出它的子节点。
 
 ## 输出 JSON 格式
 严格输出 JSON（不要添加其他文字）：
 {
   "sections": [
-    { "num": "1.1", "title": "子节点标题", "description": "范围", "keyPoints": ["要点 1","要点 2"], "estimatedWords": 500, "writingRequirements": "隐藏撰写指令", "retrievalQuery": "检索查询", "referenceHints": ["关键词"] }
+    { "num": "1.1", "title": "子节点标题", "description": "范围", "keyPoints": ["要点 1","要点 2"], "estimatedWords": 500, "writingRequirements": "隐藏撰写指令" }
   ]
 }`;
 
@@ -286,11 +282,10 @@ ${secondaryBlock}
 
 1. Each section must include \`keyPoints\` (2-4), cannot be empty
 2. Each section must include a concise \`description\` explaining the section's scope and role
-3. Each section must include \`writingRequirements\`: concise hidden drafting instructions for coverage, angle, boundaries, style, and diagram needs when relevant
-4. Each section must include \`retrievalQuery\` and \`referenceHints\` for knowledge-base retrieval
-5. Estimate \`estimatedWords\` per section based on content complexity
-6. Num format reflects hierarchy: "1", "1.1", "1.1.1", etc.
-7. Do not split headings only because estimatedWords is high; hierarchy must be justified by meaning and parent-child logic
+3. Each section must include \`writingRequirements\`: concise hidden drafting instructions for coverage, angle, boundaries, and style
+4. Estimate \`estimatedWords\` per section based on content complexity
+5. Num format reflects hierarchy: "1", "1.1", "1.1.1", etc.
+6. Do not split headings only because estimatedWords is high; hierarchy must be justified by meaning and parent-child logic
 
 ## Output JSON Schema
 
@@ -305,11 +300,9 @@ Output JSON only (no other text):
       "description": "One-sentence chapter scope",
       "keyPoints": ["Point 1", "Point 2"],
       "estimatedWords": 1500,
-      "writingRequirements": "Hidden drafting instruction: coverage, angle, boundaries, style, diagram needs if relevant",
-      "retrievalQuery": "Search query for supporting knowledge",
-      "referenceHints": ["entity/standard/framework"],
+      "writingRequirements": "Hidden drafting instruction: coverage, angle, boundaries, style",
       "children": [
-        {"num": "1.1", "title": "Sub-section", "description": "Scope", "keyPoints": ["Point"], "estimatedWords": 500, "writingRequirements": "Hidden drafting instruction", "retrievalQuery": "Search query", "referenceHints": ["keyword"], "children": []}
+        {"num": "1.1", "title": "Sub-section", "description": "Scope", "keyPoints": ["Point"], "estimatedWords": 500, "writingRequirements": "Hidden drafting instruction", "children": []}
       ]
     }
   ]
@@ -348,11 +341,10 @@ ${secondaryBlock}
 
 1. 每个章节必须包含 keyPoints（2-4 个），不能为空
 2. 每个章节必须包含简洁的 description，说明章节的范围和作用
-3. 每个章节必须包含 writingRequirements：简洁的隐藏撰写指令，说明覆盖范围、论述角度、章节边界、风格要求，以及相关时的图表需求
-4. 每个章节必须包含 retrievalQuery 和 referenceHints，用于知识库检索
-5. 估算每个章节的 estimatedWords
-6. 编号必须体现层级："1"、"1.1"、"1.1.1" 等
-7. 不要只因为某章节预估字数较多就拆标题。字数只能作为弱信号，层级必须由内容含义和父子逻辑决定
+3. 每个章节必须包含 writingRequirements：简洁的隐藏撰写指令，说明覆盖范围、论述角度、章节边界和风格要求
+4. 估算每个章节的 estimatedWords
+5. 编号必须体现层级："1"、"1.1"、"1.1.1" 等
+6. 不要只因为某章节预估字数较多就拆标题。字数只能作为弱信号，层级必须由内容含义和父子逻辑决定
 
 ## 输出 JSON 格式
 
@@ -367,11 +359,9 @@ ${secondaryBlock}
       "description": "一句话描述章节范围",
       "keyPoints": ["要点 1", "要点 2"],
       "estimatedWords": 1500,
-      "writingRequirements": "隐藏撰写指令：覆盖范围、论述角度、章节边界、风格要求、相关时的图表需求",
-      "retrievalQuery": "支撑该章节的知识库检索查询",
-      "referenceHints": ["实体/标准/框架"],
+      "writingRequirements": "隐藏撰写指令：覆盖范围、论述角度、章节边界和风格要求",
       "children": [
-        {"num": "1.1", "title": "子章节", "description": "范围", "keyPoints": ["要点"], "estimatedWords": 500, "writingRequirements": "隐藏撰写指令", "retrievalQuery": "检索查询", "referenceHints": ["关键词"], "children": []}
+        {"num": "1.1", "title": "子章节", "description": "范围", "keyPoints": ["要点"], "estimatedWords": 500, "writingRequirements": "隐藏撰写指令", "children": []}
       ]
     }
   ]

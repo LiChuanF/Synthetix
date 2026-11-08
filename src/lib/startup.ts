@@ -56,12 +56,15 @@ export async function startup(): Promise<void> {
   void queue.processNext();
   console.log("[queue] Task queue initialized");
 
-  // Safety-net: remove on-disk document/RAG directories whose Document row was
-  // deleted but whose cleanup task never ran (e.g. queued behind a long task
-  // when the server restarted). Non-blocking — runs once at boot.
-  void import("@/lib/documents/orphan-cleanup").then(({ cleanupOrphanDocumentFiles }) => {
-    void cleanupOrphanDocumentFiles().catch(() => undefined);
-  });
+  // Authentication is disabled; make sure the fixed local user exists so all
+  // data can be scoped to it.
+  try {
+    const { ensureLocalUser } = await import("@/lib/auth/local-user");
+    await ensureLocalUser();
+    console.log("[auth] local user ready");
+  } catch (e) {
+    console.warn("[auth] failed to ensure local user:", (e as Error).message);
+  }
 
   // Pre-load LiteLLM catalog from disk (download once if missing)
   void import("@/lib/models/model-catalog").then(({ lookupModel }) => {

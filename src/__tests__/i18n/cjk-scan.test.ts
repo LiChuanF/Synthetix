@@ -48,6 +48,8 @@ describe("CJK hardcoded string scan", () => {
     path.join("lib", "writing", "diagram-translate.ts"),
     // CJK detection regexes (detect language, not display)
     path.join("lib", "writing", "generator.ts"),
+    // Prompt blocks selected by document language, not UI strings
+    path.join("lib", "writing", "context.ts"),
     path.join("lib", "queue", "workers", "outline-worker.ts"),
     "__tests__",
     // Brainstorm prompt data

@@ -4,7 +4,6 @@ import { createLLMProvider } from "@/lib/llm/factory";
 import { recordTokenUsageSafely } from "@/lib/llm/usage";
 import { compareSectionStream } from "@/lib/writing/generator";
 import { stripLeadingSectionTitle } from "@/lib/writing/strip-section-title";
-import { persistSectionReferences } from "@/lib/writing/persist-references";
 import { resolveModelOrFallback, resolveSecondModel } from "@/lib/writing/resolve-models";
 import { mergeSectionConstraints } from "@/lib/writing/constraints";
 import { sseEvent, sseDone, sseError } from "@/lib/writing/sse-events";
@@ -105,7 +104,6 @@ export async function POST(
   let outputTokensA = 0;
   let inputTokensB = 0;
   let outputTokensB = 0;
-  let ragRefs: { documentId?: string; chunkId?: string; documentName: string; title?: string | null; content: string; score: number }[] = [];
 
   const readable = new ReadableStream({
     async start(controller) {
@@ -118,10 +116,6 @@ export async function POST(
           { provider: modelBProvider, modelId: modelBRecord.modelId, modelConfigId: modelBRecord.id },
           constraints,
           {
-            onReferences(refs) {
-              ragRefs = refs;
-              controller.enqueue(encoder.encode(sseEvent("references", { references: refs })));
-            },
             onChunk(source, content) {
               controller.enqueue(encoder.encode(sseEvent("chunk", { source, content })));
             },
@@ -142,7 +136,6 @@ export async function POST(
         );
 
         if (contentA || contentB) {
-          await persistSectionReferences(sectionId, ragRefs);
           await Promise.all([
             recordTokenUsageSafely({
               userId: user.id, modelConfigId: modelARecord.id, module: "comparison",

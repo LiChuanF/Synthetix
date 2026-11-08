@@ -1,10 +1,7 @@
 import { db } from "@/lib/db";
 import { generateSectionFull } from "@/lib/writing/generator";
 import { generateSummary } from "@/lib/writing/summarizer";
-import { createAssetRequests } from "@/lib/writing/asset-pipeline";
-import { buildEffectiveConstraints } from "@/lib/writing/constraints";
 import { stripLeadingSectionTitle } from "@/lib/writing/strip-section-title";
-import { persistSectionReferences } from "@/lib/writing/persist-references";
 import type { TaskPayload, TaskResult, TaskExecutionContext } from "@/lib/queue/types";
 
 interface DraftGenerateAllPayload extends TaskPayload {
@@ -45,29 +42,6 @@ async function updateTaskDraftProgress(
       updatedAt: new Date(),
     },
   }).catch(() => {});
-}
-
-async function createAssetsFromContent(
-  draftId: string,
-  sectionId: string,
-  rawContent: string,
-  section: {
-    title: string;
-    description?: string | null;
-    keyPoints?: string | null;
-    estimatedWords?: number | null;
-    constraints?: string | null;
-  },
-  constraints?: Parameters<typeof buildEffectiveConstraints>[1],
-): Promise<string> {
-  const { contentWithIds } = await createAssetRequests(
-    draftId,
-    sectionId,
-    rawContent,
-    section,
-    buildEffectiveConstraints(section.constraints, constraints),
-  );
-  return contentWithIds;
 }
 
 async function finalizeGeneratedSection(
@@ -133,7 +107,7 @@ export async function generateDraftAll(
   });
 
   const targets = sections.filter((section) => {
-    if (overwrite) return !["retrieving", "generating", "comparing"].includes(section.status);
+    if (overwrite) return !["generating", "comparing"].includes(section.status);
     if (section.status === "reviewing" && section.content) return true;
     return section.status === "pending" || section.status === "failed";
   });
@@ -213,7 +187,7 @@ export async function generateDraftAll(
       await db.section.update({
         where: { id: section.id },
         data: {
-          status: "retrieving",
+          status: "generating",
           content: overwrite ? null : section.content,
           summary: overwrite ? null : section.summary,
           wordCount: overwrite ? null : section.wordCount,
@@ -251,22 +225,12 @@ export async function generateDraftAll(
         return { generated, cancelled: true, errors };
       }
 
-      await persistSectionReferences(section.id, result.ragReferences);
-
-      await db.section.update({
-        where: { id: section.id },
-        data: { status: "generating" },
-      });
-
       if (await isCancelled()) {
         await restoreSectionAfterCancel(section.id);
         return { generated, cancelled: true, errors };
       }
 
-      const content = stripLeadingSectionTitle(
-        await createAssetsFromContent(draftId, section.id, result.content, section, sectionConstraints),
-        section.title,
-      );
+      const content = stripLeadingSectionTitle(result.content, section.title);
 
       if (await isCancelled()) {
         await restoreSectionAfterCancel(section.id);

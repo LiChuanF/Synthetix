@@ -37,8 +37,6 @@ interface EditorPanelProps {
   streamContentA?: string;
   streamContentB?: string;
   genMode?: GenerationMode;
-  onMarkerClick?: (markerId: string, kind: "image" | "diagram") => void;
-  pendingMarkerCount?: number;
 }
 
 export function EditorPanel({
@@ -64,8 +62,6 @@ export function EditorPanel({
   streamContentA = "",
   streamContentB = "",
   genMode = "single",
-  onMarkerClick,
-  pendingMarkerCount = 0,
 }: EditorPanelProps) {
   const { t, format } = useLocale();
   const ex = t.writing.editorExtra;
@@ -142,15 +138,6 @@ export function EditorPanel({
         <span className="text-[13px] text-muted-foreground font-medium">
           {section.estimatedWords ? format.template(ex.estimatedWords, { n: section.estimatedWords }) : ex.noWordEstimate}
           {section.description && ` — ${section.description}`}
-          {pendingMarkerCount > 0 && (
-            <span className="inline-flex items-center gap-1 ml-2 px-2 py-0.5 bg-amber-50 text-amber-600 rounded-full text-[11px] font-semibold">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3 h-3">
-                <rect x="2" y="2" width="12" height="12" rx="2" />
-                <path d="M2 6h12M6 2v12" />
-              </svg>
-              {pendingMarkerCount} {ex.pending}
-            </span>
-          )}
         </span>
       </div>
 
@@ -184,13 +171,7 @@ export function EditorPanel({
           {editingContent === null && isLocked && section.content && (
             <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
               <div className="p-5 text-[15px] leading-loose text-foreground/75">
-                <ContentRenderer
-                  content={section.content}
-                  draftId={section.draftId}
-                  sectionId={section.id}
-                  sectionTitle={section.title}
-                  onMarkerClick={onMarkerClick}
-                />
+                <ContentRenderer content={section.content} sectionTitle={section.title} />
               </div>
               <div className="px-[18px] py-3 border-t border-border bg-muted/40 flex items-center justify-between">
                 <span className="text-[13px] text-muted-foreground font-medium">
@@ -294,8 +275,6 @@ export function EditorPanel({
           onSelectA={() => onSelectModel("a")}
           onSelectB={() => onSelectModel("b")}
           onEdit={handleEdit}
-          draftId={section.draftId}
-          sectionId={section.id}
           sectionTitle={section.title}
           mode={reviewDisplay.mode}
         />

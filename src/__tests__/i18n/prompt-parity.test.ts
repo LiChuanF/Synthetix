@@ -42,10 +42,10 @@ describe("Prompt localization parity", () => {
     });
 
     it("writing prompts are supplied by conditional skill builders", () => {
-      expect(buildWritingContext("en", { needsDiagram: false })).not.toContain("DIAGRAM_REQUEST");
-      expect(buildWritingContext("zh-CN", { needsDiagram: true })).toContain("DIAGRAM_REQUEST");
       expect(buildWritingContext("en", { isParentSection: true })).toContain("child subsections");
       expect(buildWritingContext("zh-CN", { isParentSection: false })).toContain("叶子章节");
+      expect(buildWritingContext("en")).not.toContain("DIAGRAM_REQUEST");
+      expect(buildWritingContext("zh-CN")).not.toContain("图表语法");
     });
   });
 

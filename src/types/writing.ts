@@ -41,17 +41,6 @@ export interface DraftMeta {
   progress?: DraftProgress;
 }
 
-interface SectionReferenceMeta {
-  documentName: string;
-  relevanceScore: number;
-  sourceAnchor: string | null;
-  documentId: string | null;
-  chunkId?: string | null;
-  content: string | null;
-  sourceType?: string | null;
-  images?: Array<{ documentId: string; filename: string; url: string; altText: string | null }>;
-}
-
 export interface SectionMeta {
   id: string;
   draftId: string;
@@ -71,13 +60,10 @@ export interface SectionMeta {
   modelA: string | null;
   modelB: string | null;
   selectedModel: string | null;
-  ragMode: string;
-  ragDocumentIds: string | null;
   createdAt: string;
   updatedAt: string;
   children?: SectionMeta[];
   versions?: SectionVersionMeta[];
-  references?: SectionReferenceMeta[];
 }
 
 interface SectionVersionMeta {
@@ -98,8 +84,6 @@ export interface OutlineSectionData {
   keyPoints?: string[];
   estimatedWords?: number;
   writingRequirements?: string;
-  retrievalQuery?: string;
-  referenceHints?: string[];
   children?: OutlineSectionData[];
 }
 

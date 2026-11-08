@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, use } from "react";
 import { useRouter } from "next/navigation";
 import { OutlinePanel } from "@/components/writing/outline-panel";
 import { EditorPanel } from "@/components/writing/editor-panel";
-import { ReferencePanel } from "@/components/writing/reference-panel";
+import { NotesPanel } from "@/components/writing/notes-panel";
 import { isSectionDone } from "@/lib/writing/status";
 import { useDraftData } from "@/hooks/writing/use-draft-data";
 import { useGenerateAll } from "@/hooks/writing/use-generate-all";
@@ -12,8 +12,6 @@ import { useGeneration } from "@/hooks/writing/use-generation";
 import { useSectionActions } from "@/hooks/writing/use-section-actions";
 import { useExport } from "@/hooks/writing/use-export";
 import { useModelSelection } from "@/hooks/writing/use-model-selection";
-import { parseAllMarkers } from "@/lib/writing/marker-parser";
-import { splitSectionReferences } from "@/lib/writing/reference-view";
 import { useLocale } from "@/lib/i18n";
 
 export default function WritingPage({
@@ -31,7 +29,6 @@ export default function WritingPage({
   const { models, selectedModelA, selectedModelB, defaultModelId, setSelectedModelA, setSelectedModelB } = useModelSelection();
   const genAll = useGenerateAll(id, setActiveSectionId, loadDraft);
   const gen = useGeneration(id, activeSectionId, loadDraft, selectedModelA, selectedModelB);
-  const { setReferences } = gen;
   const actions = useSectionActions(id, activeSectionId, loadDraft);
   const exp = useExport(id, draft?.title);
 
@@ -41,28 +38,7 @@ export default function WritingPage({
   const [outlineWidth, setOutlineWidth] = useState(260);
   const [referenceWidth, setReferenceWidth] = useState(300);
 
-  const [activeMarker, setActiveMarker] = useState<{
-    markerId: string;
-    kind: "image" | "diagram";
-    params: Record<string, string>;
-  } | null>(null);
-
   const activeSection = draft?.sections.find((s) => s.id === activeSectionId) || null;
-  const pendingMarkerCount = activeSection?.content ? parseAllMarkers(activeSection.content).filter((m) => m.raw.includes("_REQUEST")).length : 0;
-
-  useEffect(() => {
-    if (!draft || !activeSectionId) {
-      setReferences([]);
-      return;
-    }
-    const section = draft.sections?.find((s) => s.id === activeSectionId);
-    if (section?.references?.length) {
-      const refs = splitSectionReferences(section.references);
-      setReferences(refs);
-    } else {
-      setReferences([]);
-    }
-  }, [activeSectionId, draft, setReferences]);
 
   useEffect(() => {
     if (!draft) return;
@@ -77,23 +53,6 @@ export default function WritingPage({
   const handleConfirm = useCallback(async () => {
     await gen.handleConfirm(setActiveSectionId);
   }, [gen, setActiveSectionId]);
-
-  const handleMarkerClick = useCallback((markerId: string, kind: "image" | "diagram") => {
-    if (!activeSection?.content) return;
-    const markers = parseAllMarkers(activeSection.content);
-    const marker = markers.find((m) => m.markerId === markerId);
-    if (!marker) return;
-    setActiveMarker({ markerId, kind, params: marker.params });
-    if (referenceCollapsed) setReferenceCollapsed(false);
-  }, [activeSection?.content, referenceCollapsed]);
-
-  const handleAssetConfirm = useCallback(async (markerId: string, assetId: string) => {
-    if (!activeSectionId) return;
-    const newContent = await actions.handleInsertAsset(markerId, assetId);
-    if (newContent) {
-      setActiveMarker(null);
-    }
-  }, [activeSectionId, actions]);
 
   if (loading) {
     return (
@@ -387,8 +346,6 @@ export default function WritingPage({
             streamContentA={gen.generatingSectionId === activeSectionId ? gen.streamContentA : ""}
             streamContentB={gen.generatingSectionId === activeSectionId ? gen.streamContentB : ""}
             genMode={gen.generationMode}
-            onMarkerClick={handleMarkerClick}
-            pendingMarkerCount={pendingMarkerCount}
           />
         </div>
 
@@ -417,28 +374,17 @@ export default function WritingPage({
           </div>
         )}
 
-        {/* Reference Panel */}
+        {/* Notes Panel */}
         <div
           className="shrink-0 overflow-hidden border-l border-border h-full"
           style={{ width: referenceCollapsed ? 0 : referenceWidth }}
         >
           {!referenceCollapsed && (
             <div style={{ width: referenceWidth }} className="h-full">
-              <ReferencePanel
-                references={gen.references}
-                sectionNotes={sectionNotes}
-                onSectionNotesChange={setSectionNotes}
-                draftId={id}
-                sectionId={activeSectionId}
-                sectionContent={activeSection?.content || ""}
-                sectionRagMode={activeSection?.ragMode || "auto"}
-                sectionRagDocumentIds={(() => { try { return JSON.parse(activeSection?.ragDocumentIds || "[]"); } catch { return []; } })()}
-                assets={actions.sectionAssets}
-                onAssetChanged={actions.loadAssets}
-                onRagConfigChange={actions.handleRagConfigChange}
-                onInsertAsset={(assetId: string) => actions.handleInsertAsset("", assetId)}
-                activeMarker={activeMarker}
-                onAssetConfirm={handleAssetConfirm}
+              <NotesPanel
+                notes={sectionNotes}
+                onNotesChange={setSectionNotes}
+                disabled={!activeSectionId}
               />
             </div>
           )}

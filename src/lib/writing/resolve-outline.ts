@@ -8,8 +8,6 @@ export interface OutlineSectionLike {
   keyPoints?: string[];
   estimatedWords?: number;
   writingRequirements?: string;
-  retrievalQuery?: string;
-  referenceHints?: string[];
   children?: OutlineSectionLike[];
 }
 
@@ -72,8 +70,6 @@ function buildHiddenConstraints(section: OutlineSectionLike): string | null {
   const constraints: Record<string, unknown> = {};
   if (section.num) constraints.outlineNumber = section.num;
   if (section.writingRequirements) constraints.writingRequirements = section.writingRequirements;
-  if (section.retrievalQuery) constraints.retrievalQuery = section.retrievalQuery;
-  if (section.referenceHints && section.referenceHints.length > 0) constraints.referenceHints = section.referenceHints;
   return Object.keys(constraints).length > 0 ? JSON.stringify(constraints) : null;
 }
 

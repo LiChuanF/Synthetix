@@ -7,13 +7,11 @@ export type PromptSkillId =
   | "brainstorm-mode-select"
   | "brainstorm-section-refine"
   | "writing-base"
-  | "writing-reference-safety"
   | "writing-section-boundary"
   | "writing-anti-ai-style"
   | "writing-output-format"
   | "writing-parent-overview"
-  | "writing-leaf-section"
-  | "writing-diagram-request";
+  | "writing-leaf-section";
 
 type LocalizedSkill = Record<DocumentLanguage, string>;
 
@@ -196,20 +194,6 @@ Match the target section title, scope, key points, estimated word count, user re
 
 匹配目标章节标题、范围、要点、预估字数、用户要求和文档语言。`,
   },
-  "writing-reference-safety": {
-    en: `Reference handling:
-- Treat retrieved references as background material, not as text to quote mechanically.
-- Do not expose the existence of references, retrieval, RAG, source chunks, prompts, or model context.
-- Do not write phrases such as "according to the reference material", "based on the provided document", or "the source mentions".
-- Do not include customer names, company names, people, project names, file names, or internal labels from references unless directly relevant.
-- Do not fabricate facts, numbers, dates, organizations, or citations. If references do not support a specific claim, write at the appropriate level of generality.`,
-    "zh-CN": `参考资料处理：
-- 将检索到的资料视为背景材料，不要机械引用。
-- 不要暴露参考资料、检索、RAG、来源片段、提示词或模型上下文的存在。
-- 不要写"根据参考资料"、"基于提供的文档"、"来源提到"等表述。
-- 不要包含来自参考资料的客户名称、公司名称、人名、项目名、文件名或内部标识，除非与目标章节直接相关。
-- 不要捏造事实、数据、日期、机构或引文。若资料不足以支撑具体结论，应在合适的抽象层级表达。`,
-  },
   "writing-section-boundary": {
     en: `Section boundaries:
 - Follow the target section scope. Do not write content for other chapters.
@@ -267,38 +251,6 @@ Match the target section title, scope, key points, estimated word count, user re
   "writing-leaf-section": {
     en: `This target section is a leaf section. Write complete, substantive reader-facing content for this section.`,
     "zh-CN": `当前目标章节是叶子章节。请为该章节撰写完整、实质性的面向读者正文。`,
-  },
-  "writing-diagram-request": {
-    en: `Diagram syntax:
-If the user message explicitly requires a diagram, include exactly one inline block:
-[DIAGRAM_REQUEST:
-type=<architecture|flowchart|data-flow|deployment|component|sequence|comparison|timeline|security>
-title=<diagram title>
-purpose=<what the diagram shows>
-placement=after_current_paragraph
-nodes=<comma-separated key entities>
-relationships=<for architecture/deployment/topology: ownership, containment, dependency, management scope, isolation>
-groups=<optional containers such as layers, resource pools, trust zones, platforms, or domains>
-boundaries=<optional physical/logical isolation boundaries>
-flows=<only for flowchart/data-flow/sequence: directional steps using ->>
-]
-For architecture, deployment, and topology diagrams, prefer groups/boundaries/relationships over process arrows.
-Place it after the paragraph that best describes the relevant architecture, flow, topology, or sequence.`,
-    "zh-CN": `图表语法：
-如果用户消息明确要求图表，请准确插入一个内联块：
-[DIAGRAM_REQUEST:
-type=<architecture|flowchart|data-flow|deployment|component|sequence|comparison|timeline|security>
-title=<图表标题>
-purpose=<图表展示什么>
-placement=after_current_paragraph
-nodes=<逗号分隔的关键实体>
-relationships=<架构/部署/拓扑图使用：归属、包含、依赖、管控范围、隔离关系>
-groups=<可选容器：层级、资源池、信任区、平台、域>
-boundaries=<可选物理或逻辑隔离边界>
-flows=<仅流程图/数据流/时序图使用：用 -> 表达方向步骤>
-]
-架构图、部署图和拓扑图优先使用 groups/boundaries/relationships，不要默认画成流程箭头。
-将其放在最能说明相关架构、流程、拓扑或时序的段落后方。`,
   },
 };
 

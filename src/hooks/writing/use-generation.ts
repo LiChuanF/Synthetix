@@ -3,7 +3,6 @@
 import { useState, useCallback } from "react";
 import { toast } from "sonner";
 import type { GenerationMode, SectionMeta } from "@/types/writing";
-import type { RagReferenceView } from "@/lib/writing/reference-view";
 import { getLocalizedError } from "@/lib/i18n";
 
 export function useGeneration(
@@ -21,7 +20,6 @@ export function useGeneration(
   const [generationMode, setGenerationMode] = useState<GenerationMode>("single");
   const [isThinking, setIsThinking] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
-  const [references, setReferences] = useState<RagReferenceView[]>([]);
 
   const handleGenerate = useCallback(
     async (
@@ -88,8 +86,7 @@ export function useGeneration(
               if (message.startsWith("data: ")) {
                 try {
                   const data = JSON.parse(message.slice(6));
-                  if (data.type === "references") setReferences(data.references);
-                  else if (data.type === "reasoning") setIsThinking(true);
+                  if (data.type === "reasoning") setIsThinking(true);
                   else if (data.type === "chunk") {
                     setIsThinking(false);
                     if (data.source === "a") {
@@ -119,8 +116,6 @@ export function useGeneration(
           const data = await res.json();
           if (!data.success) {
             toast.error(getLocalizedError(data));
-          } else if (data.data && data.data.references) {
-            setReferences(data.data.references);
           }
           await loadDraft();
         }
@@ -201,8 +196,6 @@ export function useGeneration(
     generationMode,
     isThinking,
     isConfirming,
-    references,
-    setReferences,
     handleGenerate,
     handleConfirm,
     handleUnlock,

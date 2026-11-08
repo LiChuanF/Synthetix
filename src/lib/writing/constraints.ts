@@ -4,8 +4,6 @@ export interface SectionConstraintData {
   outlineNumber?: string;
   additionalRequirements?: string;
   writingRequirements?: string;
-  retrievalQuery?: string;
-  referenceHints?: string[];
   _audit?: unknown;
 }
 
@@ -19,10 +17,6 @@ export function parseSectionConstraints(value?: string | null): SectionConstrain
       outlineNumber: typeof obj.outlineNumber === "string" ? obj.outlineNumber : undefined,
       additionalRequirements: typeof obj.additionalRequirements === "string" ? obj.additionalRequirements : undefined,
       writingRequirements: typeof obj.writingRequirements === "string" ? obj.writingRequirements : undefined,
-      retrievalQuery: typeof obj.retrievalQuery === "string" ? obj.retrievalQuery : undefined,
-      referenceHints: Array.isArray(obj.referenceHints)
-        ? obj.referenceHints.filter((item): item is string => typeof item === "string")
-        : undefined,
       _audit: obj._audit,
     };
   } catch {
@@ -35,8 +29,6 @@ function stringifySectionConstraints(value: SectionConstraintData): string | nul
   if (value.outlineNumber) cleaned.outlineNumber = value.outlineNumber;
   if (value.additionalRequirements) cleaned.additionalRequirements = value.additionalRequirements;
   if (value.writingRequirements) cleaned.writingRequirements = value.writingRequirements;
-  if (value.retrievalQuery) cleaned.retrievalQuery = value.retrievalQuery;
-  if (value.referenceHints?.length) cleaned.referenceHints = value.referenceHints;
   if (value._audit !== undefined) cleaned._audit = value._audit;
   return Object.keys(cleaned).length > 0 ? JSON.stringify(cleaned) : null;
 }
@@ -49,7 +41,6 @@ export function mergeSectionConstraints(
   return stringifySectionConstraints({
     ...existing,
     ...updates,
-    referenceHints: updates.referenceHints ?? existing.referenceHints,
   });
 }
 
@@ -60,9 +51,7 @@ export function buildEffectiveConstraints(
   const hidden = parseSectionConstraints(sectionConstraints);
   const hasHidden =
     Boolean(hidden.additionalRequirements) ||
-    Boolean(hidden.writingRequirements) ||
-    Boolean(hidden.retrievalQuery) ||
-    Boolean(hidden.referenceHints?.length);
+    Boolean(hidden.writingRequirements);
 
   if (!requestConstraints && !hasHidden) {
     return undefined;
@@ -79,8 +68,6 @@ export function buildEffectiveConstraints(
   return {
     ...requestConstraints,
     additionalRequirements: additionalRequirements || requestAdditional || persistedAdditional,
-    retrievalQuery: hidden.retrievalQuery,
-    referenceHints: hidden.referenceHints,
     writingRequirements: hidden.writingRequirements,
   };
 }

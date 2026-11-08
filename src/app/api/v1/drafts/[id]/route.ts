@@ -9,7 +9,7 @@ import {
 } from "@/lib/api-helpers";
 
 const STUCK_THRESHOLD_MS = 3 * 60 * 1000;
-const TRANSIENT_STATUSES = ["generating", "retrieving", "comparing"];
+const TRANSIENT_STATUSES = ["generating", "comparing"];
 
 export const dynamic = "force-dynamic";
 
@@ -28,24 +28,7 @@ export async function GET(
     let draft = await db.draft.findFirst({
       where: { id, userId: user.id },
       include: {
-        sections: {
-          orderBy: { index: "asc" },
-          include: {
-            references: {
-              orderBy: { relevanceScore: "desc" },
-              select: {
-                documentName: true,
-                relevanceScore: true,
-                sourceAnchor: true,
-                documentId: true,
-                chunkId: true,
-                content: true,
-                images: true,
-                sourceType: true,
-              },
-            },
-          },
-        },
+        sections: { orderBy: { index: "asc" } },
       },
     });
 
@@ -80,24 +63,7 @@ export async function GET(
         const refreshed = await db.draft.findFirst({
           where: { id, userId: user.id },
           include: {
-            sections: {
-              orderBy: { index: "asc" },
-              include: {
-                references: {
-                  orderBy: { relevanceScore: "desc" },
-                  select: {
-                    documentName: true,
-                    relevanceScore: true,
-                    sourceAnchor: true,
-                    documentId: true,
-                    chunkId: true,
-                    content: true,
-                    images: true,
-                    sourceType: true,
-                  },
-                },
-              },
-            },
+            sections: { orderBy: { index: "asc" } },
           },
         });
         if (refreshed) draft = refreshed;

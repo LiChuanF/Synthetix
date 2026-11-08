@@ -18,8 +18,6 @@ interface ComparisonViewProps {
   onSelectB: () => void;
   onEdit: (content: string, source: "a" | "b") => void;
   mode: "compare" | "single";
-  draftId?: string;
-  sectionId?: string;
   sectionTitle?: string | null;
 }
 
@@ -31,8 +29,6 @@ function ModelPanel({
   onSelect,
   onCopy,
   onEdit,
-  draftId,
-  sectionId,
   sectionTitle,
 }: {
   label: string;
@@ -42,8 +38,6 @@ function ModelPanel({
   onSelect: () => void;
   onCopy: () => void;
   onEdit: () => void;
-  draftId?: string;
-  sectionId?: string;
   sectionTitle?: string | null;
 }) {
   const { t } = useLocale();
@@ -84,12 +78,7 @@ function ModelPanel({
       </div>
       <div className="p-5 text-[15px] leading-loose text-foreground/75 min-h-[260px]">
         {displayContent ? (
-          <ContentRenderer
-            content={displayContent}
-            draftId={draftId || ""}
-            sectionId={sectionId || ""}
-            sectionTitle={sectionTitle}
-          />
+          <ContentRenderer content={displayContent} sectionTitle={sectionTitle} />
         ) : (
           <div className="text-muted-foreground italic">{ce.waitingForGeneration}</div>
         )}
@@ -133,8 +122,6 @@ export function ComparisonView({
   onSelectB,
   onEdit,
   mode,
-  draftId,
-  sectionId,
   sectionTitle,
 }: ComparisonViewProps) {
   const { t } = useLocale();
@@ -173,12 +160,7 @@ export function ComparisonView({
         </div>
         <div className="p-5 text-[15px] leading-loose text-foreground/75 min-h-[260px]">
           {displayContentA ? (
-            <ContentRenderer
-              content={displayContentA}
-              draftId={draftId || ""}
-              sectionId={sectionId || ""}
-              sectionTitle={sectionTitle}
-            />
+            <ContentRenderer content={displayContentA} sectionTitle={sectionTitle} />
           ) : (
             <div className="text-muted-foreground italic">{ce.waitingForGeneration}</div>
           )}
@@ -200,8 +182,6 @@ export function ComparisonView({
         onSelect={onSelectA}
         onCopy={() => displayContentA && navigator.clipboard.writeText(displayContentA)}
         onEdit={() => displayContentA && onEdit(displayContentA, "a")}
-        draftId={draftId}
-        sectionId={sectionId}
         sectionTitle={sectionTitle}
       />
       <ModelPanel
@@ -212,8 +192,6 @@ export function ComparisonView({
         onSelect={onSelectB}
         onCopy={() => displayContentB && navigator.clipboard.writeText(displayContentB)}
         onEdit={() => displayContentB && onEdit(displayContentB, "b")}
-        draftId={draftId}
-        sectionId={sectionId}
         sectionTitle={sectionTitle}
       />
     </div>

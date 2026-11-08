@@ -1,6 +1,6 @@
 /**
- * Capture ALL README screenshots (8 surfaces × 2 locales = 16 images):
- *   dashboard, library, search, wiki, brainstorm, writing, topology, models-usage
+ * Capture ALL README screenshots (4 surfaces × 2 locales = 8 images):
+ *   dashboard, brainstorm, writing, models-usage
  *
  * For brainstorm / writing / models-usage, content is driven via API first
  * (brainstorm messages + section generation auto-populate token usage too).
@@ -89,16 +89,15 @@ async function driveDraft(api, browser) {
       if (!res.ok) return { ok: false, status: res.status };
       const reader = res.body.getReader();
       const dec = new TextDecoder();
-      let chunks = 0, gotDone = false, refs = false;
+      let chunks = 0, gotDone = false;
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         const txt = dec.decode(value, { stream: true });
-        if (txt.includes('"type":"references"')) refs = true;
         if (txt.includes('"type":"chunk"') || txt.includes('"type":"delta"')) chunks++;
         if (txt.includes('"type":"done"')) gotDone = true;
       }
-      return { ok: true, done: gotDone, chunks, refs };
+      return { ok: true, done: gotDone, chunks };
     }, ssePath);
     console.log("  SSE:", JSON.stringify(result));
   } catch (e) {
@@ -112,20 +111,6 @@ async function driveDraft(api, browser) {
 async function shootSimple(page, clean, tag, sessionId) {
   const simple = [
     { name: "dashboard", url: "/", wait: 1000 },
-    { name: "library", url: "/library", wait: 1000 },
-    {
-      name: "search",
-      url: "/search",
-      wait: 0,
-      after: async (p) => {
-        const input = p.getByPlaceholder(/Search documents|搜索|Search/i).first();
-        await input.fill("精益创业").catch(() => {});
-        await p.getByRole("button", { name: /Search|搜索/i }).last().click().catch(() => {});
-        await p.waitForTimeout(1800);
-      },
-    },
-    { name: "wiki", url: "/wiki", wait: 1200 },
-    { name: "topology", url: "/topology", wait: 1500 },
   ];
   for (const s of simple) {
     try {

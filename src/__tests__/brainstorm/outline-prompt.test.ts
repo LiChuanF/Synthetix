@@ -10,8 +10,6 @@ describe("buildLightweightOutlinePrompt", () => {
     expect(prompt).toContain("Document Archetype: technical_solution");
     expect(prompt).toContain("architecture-first");
     expect(prompt).toContain("writingRequirements");
-    expect(prompt).toContain("retrievalQuery");
-    expect(prompt).toContain("referenceHints");
     expect(prompt).not.toContain("Investment Estimate");
     expect(prompt).not.toContain("Emergency Response");
     expect(prompt.length).toBeLessThan(4500);

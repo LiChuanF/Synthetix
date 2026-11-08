@@ -6,7 +6,7 @@ import { getAuthUser } from "@/lib/auth/session";
 import { authErrorResponse, errorResponse } from "@/lib/api-helpers";
 import {
   sanitizeFilename, contentDisposition, normalizeFormat,
-  buildMarkdown, inlineAssetImages, runExport,
+  buildMarkdown, runExport,
   renderPdfWithPlaywright, cleanupFiles, getTmpDir,
 } from "@/lib/writing/export-pipeline";
 
@@ -25,7 +25,7 @@ export async function POST(
   if (!format) return errorResponse(`Unsupported format: ${String(body.format)}`, 400);
 
   try {
-    const markdown = await buildMarkdown(draftId, user.id, { inlineAssets: false });
+    const markdown = await buildMarkdown(draftId, user.id);
     const draft = await db.draft.findFirst({ where: { id: draftId, userId: user.id }, select: { title: true } });
     const filename = sanitizeFilename(draft?.title || "document");
 
@@ -36,8 +36,7 @@ export async function POST(
     }
 
     const TMP_DIR = getTmpDir();
-    const inlinedMarkdown = await buildMarkdown(draftId, user.id, { inlineAssets: true });
-    const exportMarkdown = await inlineAssetImages(inlinedMarkdown);
+    const exportMarkdown = markdown;
 
     if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 

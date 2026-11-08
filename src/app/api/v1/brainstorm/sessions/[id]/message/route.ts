@@ -4,7 +4,6 @@ import { resolveModel } from "@/lib/llm/resolve-model";
 import { createLLMProvider } from "@/lib/llm/factory";
 import { recordTokenUsage } from "@/lib/llm/usage";
 import { authErrorResponse, errorResponse, successResponse } from "@/lib/api-helpers";
-import { preFetchDomainKnowledge } from "@/lib/brainstorm/domain-context";
 import { buildLengthRequirementQuestion, conversationHasLengthRequirement } from "@/lib/brainstorm/length-requirement";
 import { detectMarker, stripMarker } from "@/lib/brainstorm/markers";
 import { resolveBrainstormPromptPhase } from "@/lib/brainstorm/phase-routing";
@@ -110,18 +109,6 @@ export async function POST(
   const chatModel = await resolveModel("chat", user.id);
   if (!chatModel) return errorResponse({ code: "modelNotConfigured", message: "No chat model configured" }, 400);
 
-  const existingCount = await db.message.count({
-    where: { sessionId: id, role: { in: ["user", "ai"] } },
-  });
-
-  let ragSupplement = "";
-  if (existingCount <= 2) {
-    const ragResult = await preFetchDomainKnowledge(content, user.id);
-    if (ragResult) {
-      ragSupplement = `\n\n## Background Reference (internal only; never mention, cite, or imply that this material exists)\n${ragResult}`;
-    }
-  }
-
   const historyDesc = await db.message.findMany({
     where: { sessionId: id },
     orderBy: { createdAt: "desc" },
@@ -134,7 +121,7 @@ export async function POST(
   const facilitatorPrompt = buildFacilitatorPrompt(locale, promptPhase);
 
   const llmMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
-    { role: "system", content: facilitatorPrompt + ragSupplement },
+    { role: "system", content: facilitatorPrompt },
     ...history.filter((m) => m.role !== "system").map((m) => ({
       role: (m.role === "ai" ? "assistant" : "user") as "assistant" | "user",
       content: trimMessageContent(m.content),

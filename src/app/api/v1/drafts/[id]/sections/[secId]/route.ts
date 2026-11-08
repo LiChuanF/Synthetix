@@ -1,9 +1,6 @@
 import { db } from "@/lib/db";
 import { getAuthUser } from "@/lib/auth/session";
-import { parseDiagramRequests } from "@/lib/writing/diagram";
 import { stripLeadingSectionTitle } from "@/lib/writing/strip-section-title";
-import { createAssetRequests } from "@/lib/writing/asset-pipeline";
-import { buildEffectiveConstraints } from "@/lib/writing/constraints";
 import {
   authErrorResponse,
   errorResponse,
@@ -14,8 +11,6 @@ interface UpdateSectionBody {
   content?: string;
   selectedSource?: "a" | "b";
   constraints?: string;
-  ragMode?: "auto" | "manual" | "off";
-  ragDocumentIds?: string[];
   estimatedWords?: number;
 }
 
@@ -98,44 +93,24 @@ export async function PUT(
           400
         );
       }
-      const cleanedSource = stripLeadingSectionTitle(sourceContent, section.title);
-      const { contentWithIds } = await createAssetRequests(
-        draftId,
-        sectionId,
-        cleanedSource,
-        section,
-        buildEffectiveConstraints(section.constraints),
-      );
-      const finalContent = stripLeadingSectionTitle(contentWithIds, section.title);
+      const finalContent = stripLeadingSectionTitle(sourceContent, section.title);
       updateData.content = finalContent;
       updateData.selectedModel =
         body.selectedSource === "a" ? section.modelA : section.modelB;
       updateData.wordCount = finalContent.split(/\s+/).filter(Boolean).length;
       updateData.status = "reviewing";
     } else if (body.content !== undefined) {
-      const { cleaned, diagrams, images } = parseDiagramRequests(body.content);
-      updateData.content = cleaned;
-      updateData.wordCount = cleaned.split(/\s+/).filter(Boolean).length;
+      updateData.content = body.content;
+      updateData.wordCount = body.content.split(/\s+/).filter(Boolean).length;
       updateData.contentA = null;
       updateData.contentB = null;
       updateData.modelA = null;
       updateData.modelB = null;
       updateData.selectedModel = null;
-      if (diagrams.length > 0 || images.length > 0) {
-        console.warn(`PUT section ${sectionId}: ${diagrams.length} DIAGRAM_REQUEST + ${images.length} IMAGE_REQUEST blocks found in edited content — stripped but not persisted as assets. Re-generate the section to create assets.`);
-      }
     }
 
     if (body.constraints !== undefined) {
       updateData.constraints = body.constraints;
-    }
-
-    if (body.ragMode !== undefined) {
-      updateData.ragMode = body.ragMode;
-    }
-
-    if (body.ragDocumentIds !== undefined) {
-      updateData.ragDocumentIds = JSON.stringify(body.ragDocumentIds);
     }
 
     if (body.estimatedWords !== undefined) {

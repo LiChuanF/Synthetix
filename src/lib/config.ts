@@ -34,18 +34,6 @@ export const config = {
     /** AES-256 encryption key for DB credential storage. Required for PG. */
     encryptionKey: process.env.ENCRYPTION_KEY ?? "",
   },
-  rag: {
-    basicTimeoutMs: readPositiveIntEnv("RAG_PYTHON_INDEX_TIMEOUT_MS", 300_000),
-    graphTimeoutMs: readPositiveIntEnv("GRAPH_PYTHON_INDEX_TIMEOUT_MS", 14_400_000),
-    embeddingUpdateBatchSize: readPositiveIntEnv("EMBEDDING_UPDATE_BATCH_SIZE", 200),
-  },
-  wiki: {
-    extractConcurrency: readPositiveIntEnv("WIKI_EXTRACT_CONCURRENCY", 3),
-    /** When set, overrides the derived input token cap for Wiki extraction. */
-    inputMaxTokens: process.env.WIKI_INPUT_MAX_TOKENS ?? "",
-    inputTokenRatio: process.env.WIKI_INPUT_TOKEN_RATIO ?? "",
-    queryRewriteEnabled: process.env.WIKI_QUERY_REWRITE !== "false",
-  },
 } as const;
 
 /**

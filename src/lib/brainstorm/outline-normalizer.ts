@@ -47,8 +47,6 @@ function normalizeSection(raw: unknown): OutlineSection | null {
     keyPoints: asStringArray(raw.keyPoints),
     estimatedWords: asNumber(raw.estimatedWords),
     writingRequirements: asString(raw.writingRequirements) || undefined,
-    retrievalQuery: asString(raw.retrievalQuery) || undefined,
-    referenceHints: asStringArray(raw.referenceHints),
     children: children && children.length > 0 ? children : undefined,
   };
 }

@@ -3,13 +3,10 @@ import { recordTokenUsageSafely } from "@/lib/llm/usage";
 import { generateSectionStream } from "@/lib/writing/generator";
 import { auditSection } from "@/lib/writing/auditor";
 import { stripLeadingSectionTitle } from "@/lib/writing/strip-section-title";
-import { persistSectionReferences } from "@/lib/writing/persist-references";
-import { createAssetRequests } from "@/lib/writing/asset-pipeline";
-import { buildEffectiveConstraints, mergeSectionConstraints, parseSectionConstraints } from "@/lib/writing/constraints";
+import { mergeSectionConstraints, parseSectionConstraints } from "@/lib/writing/constraints";
 import { sseEvent, sseDone, sseError } from "@/lib/writing/sse-events";
 import { createOnceRecorder } from "@/lib/writing/once-recorder";
 import { findLiveBatchTask } from "@/lib/writing/batch-task-guard";
-import { updateWikiAfterSection } from "@/lib/wiki/writer";
 import {
   errorResponse,
   requireAuthUser,
@@ -74,18 +71,10 @@ export async function POST(
     });
   });
 
-  // Bridge client disconnect (request.signal) into the generation: if the
-  // client goes away we abort the LLM stream so the worker doesn't keep
-  // generating into the void. ReadableStream.cancel() also fires on disconnect.
-  const disconnectController = new AbortController();
-  const onAbort = () => disconnectController.abort();
-  if (request.signal.aborted) disconnectController.abort();
-  else request.signal.addEventListener("abort", onAbort, { once: true });
-
   const readable = new ReadableStream({
     async start(controller) {
       try {
-        await db.section.update({ where: { id: sectionId }, data: { status: "retrieving", constraints: persistedConstraints } });
+        await db.section.update({ where: { id: sectionId }, data: { status: "generating", constraints: persistedConstraints } });
 
         const completedSections = await db.section.findMany({
           where: { draftId, status: { in: ["locked", "summarized"] } },
@@ -97,10 +86,6 @@ export async function POST(
           draft, sectionForGeneration, completedSections, user.id, constraints, body.modelAConfigId,
         );
         modelConfigId = result.modelConfigId;
-
-        await persistSectionReferences(sectionId, result.ragReferences);
-        await db.section.update({ where: { id: sectionId }, data: { status: "generating" } });
-        controller.enqueue(encoder.encode(sseEvent("references", { references: result.ragReferences })));
 
         for await (const chunk of result.stream) {
           if (chunk.content) {
@@ -114,16 +99,7 @@ export async function POST(
           if (chunk.outputTokens) outTokens = chunk.outputTokens;
         }
 
-        const contentWithRequiredDiagram = stripLeadingSectionTitle(fullContent, section.title);
-        const { diagrams, images, contentWithIds } = await createAssetRequests(
-          draftId,
-          sectionId,
-          contentWithRequiredDiagram,
-          sectionForGeneration,
-          buildEffectiveConstraints(sectionForGeneration.constraints, constraints),
-        );
-
-        const finalContent = stripLeadingSectionTitle(contentWithIds, section.title);
+        const finalContent = stripLeadingSectionTitle(fullContent, section.title);
 
         await db.section.update({
           where: { id: sectionId },
@@ -139,16 +115,11 @@ export async function POST(
           },
         });
 
-        const pendingCount = diagrams.length + images.length;
-        if (pendingCount > 0) {
-          controller.enqueue(encoder.encode(sseEvent("assets", { count: pendingCount, pending: true })));
-        }
-
         await tokenRecorder.record();
 
         (async () => {
           try {
-            const auditResult = await auditSection(section.title, contentWithRequiredDiagram, section.keyPoints, user.id, sectionId);
+            const auditResult = await auditSection(section.title, finalContent, section.keyPoints, user.id, sectionId);
             const current = await db.section.findUnique({ where: { id: sectionId }, select: { constraints: true } });
             await db.section.update({
               where: { id: sectionId },
@@ -158,20 +129,6 @@ export async function POST(
             console.error(`Background audit failed for section ${sectionId}:`, err);
           }
         })();
-
-        // Wiki writeback flywheel: extract this section's new knowledge and
-        // merge it back into the Wiki so subsequent sections benefit. Fire-and-
-        // forget (non-blocking) — the section is already saved successfully.
-        // Bumps confidence of Wiki entries that were cited in this section.
-        const wikiEntryIds = (result as { wikiEntryIds?: string[] }).wikiEntryIds ?? [];
-        void updateWikiAfterSection(
-          { id: sectionId, title: section.title, content: finalContent },
-          draftId,
-          user.id,
-          wikiEntryIds,
-        ).catch((err) => {
-          console.warn(`Wiki writeback failed for section ${sectionId} (non-blocking):`, err);
-        });
 
         controller.enqueue(encoder.encode(sseDone()));
         controller.close();
@@ -184,11 +141,6 @@ export async function POST(
         try { controller.enqueue(encoder.encode(sseError(message))); } catch {}
         try { controller.close(); } catch {}
       }
-    },
-    cancel() {
-      // Client disconnected — abort any in-flight LLM stream so the worker
-      // doesn't keep generating into the void.
-      disconnectController.abort();
     },
   });
 

@@ -1,7 +1,7 @@
-import { cookies, headers } from "next/headers";
+import { cookies } from "next/headers";
 import { verifyToken, signAccessToken, signRefreshToken } from "./jwt";
 import { ACCESS_MAX_AGE, REFRESH_MAX_AGE } from "./token-core";
-import { resolveApiKeyUser } from "./api-key";
+import { ensureLocalUser } from "./local-user";
 import { useSecureCookies } from "./cookie-security";
 import type { AuthUser, JWTPayload } from "@/types/auth";
 
@@ -36,37 +36,18 @@ export function clearAuthCookies(response: Response): void {
   );
 }
 
-async function getAccessToken(): Promise<string | null> {
-  const cookieStore = await cookies();
-  return cookieStore.get(ACCESS_TOKEN_KEY)?.value ?? null;
-}
-
 async function getRefreshToken(): Promise<string | null> {
   const cookieStore = await cookies();
   return cookieStore.get(REFRESH_TOKEN_KEY)?.value ?? null;
 }
 
+/**
+ * Authentication is temporarily disabled: every request runs as the fixed
+ * local user. To re-enable login, restore the cookie/JWT and API-key lookup
+ * that used to live here (and the gate in src/proxy.ts).
+ */
 export async function getAuthUser(): Promise<AuthUser | null> {
-  // 1. Prefer cookie/JWT (the normal path for browser sessions).
-  const accessToken = await getAccessToken();
-  if (accessToken) {
-    try {
-      const payload = await verifyToken(accessToken, "access");
-      return payloadToAuthUser(payload);
-    } catch {
-      // Invalid cookie token; fall through to the API-key path below.
-    }
-  }
-
-  // 2. Fallback: Authorization: Bearer <api-key> for programmatic clients.
-  //    Only checked when cookie auth fails, to avoid a DB hit per request.
-  const headerStore = await headers();
-  const authorization = headerStore.get("authorization");
-  if (authorization) {
-    return resolveApiKeyUser(authorization);
-  }
-
-  return null;
+  return ensureLocalUser();
 }
 
 export async function refreshSession(): Promise<{

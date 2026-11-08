@@ -3,14 +3,12 @@ import path from "path";
 import { pathToFileURL } from "url";
 import { spawn } from "child_process";
 import { db } from "@/lib/db";
-import { getAssetFilePath } from "@/lib/writing/diagram-generator";
 import { stripLeadingSectionTitle } from "@/lib/writing/strip-section-title";
 import { CONFIRMED_SECTION_STATUSES } from "@/lib/writing/status";
 
 const EXPORT_SCRIPT = path.resolve(/* turbopackIgnore: true */ "workers/python/export.py");
 const PYTHON_PATH = process.env.PYTHON_PATH || (process.platform === "win32" ? "python" : "python3");
 const TMP_DIR = path.resolve("data/tmp");
-const ASSET_MARKER_RE = /\[(DIAGRAM|IMAGE):([a-f0-9-]+)\]/g;
 
 export type ExportFormat = "markdown" | "pdf" | "docx";
 
@@ -56,28 +54,7 @@ function buildSectionDepths(sections: Array<{ id: string; parentId: string | nul
   return cache;
 }
 
-function assetMarkdown(asset: { id: string; sectionId: string; title: string; path: string | null }, draftId: string, inline: boolean): string | null {
-  if (!asset.path) return null;
-  const alt = asset.title ? `Figure: ${asset.title}` : "Figure";
-  const src = inline ? `asset://${asset.id}` : `/api/v1/drafts/${draftId}/sections/${asset.sectionId}/assets/${asset.id}/serve`;
-  return `![${alt}](${src})`;
-}
-
-function replaceAssetMarkers(
-  content: string, assetsById: Map<string, { id: string; sectionId: string; title: string; path: string | null }>,
-  draftId: string, inlineAssets: boolean,
-): { content: string; referencedAssetIds: Set<string> } {
-  const referencedAssetIds = new Set<string>();
-  const replaced = content.replace(ASSET_MARKER_RE, (marker, _type, assetId: string) => {
-    const asset = assetsById.get(assetId);
-    if (!asset) return marker;
-    referencedAssetIds.add(assetId);
-    return assetMarkdown(asset, draftId, inlineAssets) ?? `*${asset.title || "Image"} unavailable*`;
-  });
-  return { content: replaced, referencedAssetIds };
-}
-
-export async function buildMarkdown(draftId: string, userId: string, options: { inlineAssets: boolean }): Promise<string> {
+export async function buildMarkdown(draftId: string, userId: string): Promise<string> {
   const draft = await db.draft.findFirst({ where: { id: draftId, userId } });
   if (!draft) throw new Error("Draft not found");
 
@@ -87,19 +64,6 @@ export async function buildMarkdown(draftId: string, userId: string, options: { 
   });
   if (sections.length === 0) throw new Error("No confirmed sections available to export");
 
-  const assets = await db.sectionAsset.findMany({
-    where: { draftId, sectionId: { in: sections.map((s) => s.id) }, status: "ready" },
-    orderBy: { createdAt: "asc" },
-  });
-
-  const assetsBySection = new Map<string, typeof assets>();
-  const assetsById = new Map<string, { id: string; sectionId: string; title: string; path: string | null }>();
-  for (const a of assets) {
-    const list = assetsBySection.get(a.sectionId) || [];
-    list.push(a); assetsBySection.set(a.sectionId, list);
-    assetsById.set(a.id, a);
-  }
-
   const depths = buildSectionDepths(sections);
   const titleHeader = `# ${draft.title}\n\n`;
   const sectionParts = sections.map((section) => {
@@ -108,48 +72,10 @@ export async function buildMarkdown(draftId: string, userId: string, options: { 
     const headingPrefix = "#".repeat(headingLevel);
     const outlineNumber = parseOutlineNumber(section);
     const headingTitle = outlineNumber ? `${outlineNumber}. ${section.title.replace(/^\d+(\.\d+)*\.?\s*/, "")}` : section.title;
-    const rawContent = stripLeadingSectionTitle(section.content ?? "", section.title);
-    const markerResult = replaceAssetMarkers(rawContent, assetsById, draftId, options.inlineAssets);
-    let content = `${headingPrefix} ${headingTitle}\n\n${markerResult.content}`;
-    const sectionAssets = assetsBySection.get(section.id);
-    if (sectionAssets && sectionAssets.length > 0) {
-      const imageParts = sectionAssets
-        .filter((a) => a.path && !markerResult.referencedAssetIds.has(a.id))
-        .map((a) => assetMarkdown(a, draftId, options.inlineAssets))
-        .filter(Boolean) as string[];
-      content += imageParts.map((m) => `\n\n${m}`).join("");
-    }
-    return content + "\n\n";
+    const content = stripLeadingSectionTitle(section.content ?? "", section.title);
+    return `${headingPrefix} ${headingTitle}\n\n${content}\n\n`;
   });
   return titleHeader + sectionParts.join("");
-}
-
-export async function inlineAssetImages(markdown: string): Promise<string> {
-  const imgRe = /!\[([^\]]*)\]\((asset:\/\/[a-f0-9-]+|[^)]*\/assets\/[^)]*\/serve)\)/g;
-  const matches = [...markdown.matchAll(imgRe)];
-  if (matches.length === 0) return markdown;
-
-  let result = markdown;
-  for (const match of matches) {
-    const alt = match[1];
-    const url = match[2];
-    const assetIdMatch = url.match(/^asset:\/\/([a-f0-9-]+)$/) ?? url.match(/\/assets\/([^/]+)\/serve/);
-    if (!assetIdMatch) continue;
-    const asset = await db.sectionAsset.findUnique({ where: { id: assetIdMatch[1] } });
-    if (!asset || !asset.path || asset.status !== "ready") continue;
-    try {
-      const filePath = getAssetFilePath(asset.path);
-      const fileContent = fs.readFileSync(filePath);
-      const mimeType = asset.mimeType
-        || (asset.path.endsWith(".svg") ? "image/svg+xml"
-          : asset.path.endsWith(".jpg") || asset.path.endsWith(".jpeg") ? "image/jpeg"
-            : asset.path.endsWith(".webp") ? "image/webp" : "image/png");
-      result = result.replace(match[0], `![${alt}](data:${mimeType};base64,${fileContent.toString("base64")})`);
-    } catch {
-      result = result.replace(match[0], `*${alt} unavailable*`);
-    }
-  }
-  return result;
 }
 
 export function runExport(input: string, output: string, format: string): Promise<void> {

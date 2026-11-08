@@ -14,7 +14,6 @@ const baseInput = {
     estimatedWords: 800,
   },
   completedSections: [],
-  ragReferences: [],
 };
 
 describe("assembleContext", () => {
@@ -30,21 +29,7 @@ describe("assembleContext", () => {
     expect(userMessage).toContain("Include concrete module boundaries.");
   });
 
-  it("emits a strong diagram instruction when the section needs a diagram", () => {
-    const messages = assembleContext({
-      ...baseInput,
-      constraints: { additionalRequirements: "Include an architecture diagram." },
-    });
-    const systemMessage = messages[0].content;
-    const userMessage = messages[1].content;
-
-    expect(systemMessage).toContain("DIAGRAM_REQUEST");
-    expect(userMessage).toContain("This section requires a diagram");
-    expect(userMessage).toContain("[DIAGRAM_REQUEST:");
-    expect(userMessage).not.toContain("you may skip");
-  });
-
-  it("does not include diagram syntax in the system prompt for ordinary sections", () => {
+  it("does not include diagram syntax for ordinary sections", () => {
     const messages = assembleContext({
       ...baseInput,
       draft: {
@@ -89,24 +74,6 @@ describe("assembleContext", () => {
     expect(userMessage).toContain("This section has child subsections");
   });
 
-  it("truncates oversized reference content while preserving high-relevance context", () => {
-    const messages = assembleContext({
-      ...baseInput,
-      ragReferences: [
-        {
-          documentName: "Architecture Notes",
-          content: `${"a".repeat(3000)}TAIL_SHOULD_NOT_APPEAR`,
-          score: 0.95,
-        },
-      ],
-    });
-    const userMessage = messages[1].content;
-
-    expect(userMessage).toContain("Architecture Notes");
-    expect(userMessage).toContain("Content truncated to keep section generation focused.");
-    expect(userMessage).not.toContain("TAIL_SHOULD_NOT_APPEAR");
-  });
-
   it("uses localized mandatory requirements text for Chinese documents", () => {
     const messages = assembleContext({
       ...baseInput,
@@ -117,12 +84,11 @@ describe("assembleContext", () => {
         keyPoints: JSON.stringify(["网关", "服务层", "数据库"]),
         estimatedWords: 800,
       },
-      constraints: { additionalRequirements: "必须包含架构图" },
+      constraints: { additionalRequirements: "必须包含架构说明" },
     }, "zh-CN");
     const userMessage = messages[1].content;
 
     expect(userMessage).toContain("## 本章节强制要求");
     expect(userMessage).toContain("必须遵守");
-    expect(userMessage).toContain("当前章节需要图表");
   });
 });

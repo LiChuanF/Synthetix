@@ -2,7 +2,8 @@
  * Verification test (not a unit test) — exercises AnthropicAdapter against
  * the REAL doubao-seed-2.0-pro endpoint (providerType=anthropic) to confirm
  * the adapter's chat() + chatStream() work end-to-end via the Anthropic
- * Messages API. Run with: pnpm vitest run anthropic-adapter-verify
+ * Messages API. Run with:
+ *   RUN_LLM_VERIFY=1 pnpm vitest run anthropic-adapter-verify
  *
  * This hits the network. It is intentionally separate from adapter.test.ts
  * (which mocks fetch) so the real-protocol path can be validated.
@@ -16,7 +17,11 @@ const MODEL = "doubao-seed-2.0-pro";
 
 const adapter = new AnthropicAdapter({ baseUrl: BASE_URL, apiKey: API_KEY });
 
-describe("AnthropicAdapter — real doubao endpoint", () => {
+// Opt-in only: this hits a real external endpoint with a hardcoded provider
+// configuration. Offline/intranet installs and CI must not depend on it.
+const RUN_REAL_ENDPOINT = process.env.RUN_LLM_VERIFY === "1";
+
+describe.skipIf(!RUN_REAL_ENDPOINT)("AnthropicAdapter — real doubao endpoint", () => {
   it("chat() returns content + token usage via /v1/messages", async () => {
     const result = await adapter.chat({
       model: MODEL,

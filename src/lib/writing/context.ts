@@ -1,6 +1,5 @@
 import type { ChatMessage } from "@/lib/llm/types";
 import { buildWritingContext, type DocumentLanguage } from "@/lib/prompts";
-import { sectionNeedsDiagram } from "@/lib/writing/diagram-requirements";
 
 export interface ContextInput {
   draft: {
@@ -19,38 +18,15 @@ export interface ContextInput {
     summary: string | null;
     status: string;
   }[];
-  ragReferences: {
-    documentId?: string;
-    chunkId?: string;
-    documentName: string;
-    title?: string | null;
-    content: string;
-    score: number;
-    sourceType?: "rag_chunk" | "rag_graph" | "wiki";
-  }[];
-  /** Synthesized Wiki entries (the LLM-Wiki layer). Injected BEFORE ragReferences
-   *  so the LLM treats them as higher-level synthesized knowledge. Each entry's
-   *  id is collected for the writeback flywheel (confidence bump on citation). */
-  wikiEntries?: {
-    id: string;
-    title: string;
-    content: string;
-    confidence: number;
-    type: string;
-  }[];
   constraints?: {
     referenceSections?: string[];
     wordLimit?: number;
     additionalRequirements?: string;
     writingRequirements?: string;
-    retrievalQuery?: string;
-    referenceHints?: string[];
   } | null;
 }
 
 const COMPLETED_SUMMARIES_TOTAL_CHAR_LIMIT = 6_000;
-const RAG_REFERENCE_CONTENT_CHAR_LIMIT = 2_500;
-const RAG_REFERENCES_TOTAL_CHAR_LIMIT = 12_000;
 
 function truncateText(value: string, limit: number): string {
   if (value.length <= limit) return value;
@@ -59,7 +35,7 @@ function truncateText(value: string, limit: number): string {
 
 function buildSystemMessage(
   docLocale: DocumentLanguage = "en",
-  options: { needsDiagram?: boolean; isParentSection?: boolean } = {},
+  options: { isParentSection?: boolean } = {},
 ): ChatMessage {
   return { role: "system", content: buildWritingContext(docLocale, options) };
 }
@@ -208,73 +184,6 @@ function buildCompletedSectionsSummary(
   ].join("\n");
 }
 
-/**
- * Build the synthesized-knowledge context block from Wiki entries.
- *
- * This sits ABOVE the raw RAG references in the prompt so the LLM treats
- * it as higher-level, already-synthesized knowledge (the LLM-Wiki flywheel:
- * reuse accumulated knowledge instead of rediscovering it per query).
- * Marked distinctly from "Reference Material" so the LLM knows it can lean
- * on it more confidently.
- */
-function buildWikiContextSection(
-  entries: NonNullable<ContextInput["wikiEntries"]>
-): string {
-  if (entries.length === 0) return "";
-
-  const WIKI_ENTRY_CHAR_LIMIT = 1000;
-  const WIKI_TOTAL_CHAR_LIMIT = 4000;
-
-  const sorted = [...entries].sort((a, b) => b.confidence - a.confidence);
-  const blocks: string[] = [];
-  let used = 0;
-  for (const entry of sorted) {
-    const header = `### ${entry.title} [${entry.type}, confidence: ${(entry.confidence * 100).toFixed(0)}%]\n`;
-    const remaining = WIKI_TOTAL_CHAR_LIMIT - used - header.length;
-    if (remaining <= 0) break;
-    const contentLimit = Math.min(WIKI_ENTRY_CHAR_LIMIT, remaining);
-    const body = entry.content.length > contentLimit
-      ? `${entry.content.slice(0, Math.max(0, contentLimit - 72)).trimEnd()}\n[truncated]`
-      : entry.content;
-    const block = `${header}${body}`;
-    blocks.push(block);
-    used += block.length;
-  }
-
-  return ["## Synthesized Knowledge Base", "", ...blocks].join("\n");
-}
-
-function buildRagReferencesSection(
-  references: ContextInput["ragReferences"]
-): string {
-  if (references.length === 0) {
-    return "";
-  }
-
-  const sorted = [...references].sort((a, b) => b.score - a.score);
-
-  const entries: string[] = [];
-  let used = 0;
-  for (const [index, ref] of sorted.entries()) {
-    const docId = ref.documentId;
-    const rewrittenContent = docId
-      ? ref.content.replace(
-          /!\[([^\]]*)\]\(images\/([^)]+)\)/g,
-          (_, alt, filename) => `![${alt}](/api/v1/documents/${docId}/images/${filename})`
-        )
-      : ref.content;
-    const header = `### Reference ${index + 1} [Source: ${ref.documentName}, Relevance: ${(ref.score * 100).toFixed(0)}%]\n`;
-    const remaining = RAG_REFERENCES_TOTAL_CHAR_LIMIT - used - header.length;
-    if (remaining <= 0) break;
-    const contentLimit = Math.min(RAG_REFERENCE_CONTENT_CHAR_LIMIT, remaining);
-    const entry = `${header}${truncateText(rewrittenContent, contentLimit)}`;
-    entries.push(entry);
-    used += entry.length;
-  }
-
-  return ["## Reference Material", "", ...entries].join("\n");
-}
-
 function buildTargetSectionBlock(section: ContextInput["section"], effectiveWordCount?: number | null): string {
   const parts: string[] = [
     "## Target Section to Write",
@@ -304,7 +213,7 @@ function buildConstraintsBlock(
 ): string {
   const parts: string[] = [
     docLocale === "zh-CN"
-      ? "## \u672c\u7ae0\u8282\u5f3a\u5236\u8981\u6c42"
+      ? "## 本章节强制要求"
       : "## Mandatory Section-Specific Requirements",
   ];
 
@@ -317,7 +226,7 @@ function buildConstraintsBlock(
   if (constraints.additionalRequirements) {
     parts.push(
       docLocale === "zh-CN"
-        ? `\u4ee5\u4e0b\u8981\u6c42\u7531\u7528\u6237\u9488\u5bf9\u5f53\u524d\u7ae0\u8282\u63d0\u4f9b\uff0c\u5fc5\u987b\u9075\u5b88\uff1a\n${constraints.additionalRequirements}`
+        ? `以下要求由用户针对当前章节提供，必须遵守：\n${constraints.additionalRequirements}`
         : `The following requirements are user-provided and must be followed for this section:\n${constraints.additionalRequirements}`
     );
   }
@@ -349,21 +258,6 @@ export function assembleContext(input: ContextInput, docLocale: DocumentLanguage
     }
   } catch {}
 
-  // Wiki synthesized knowledge — injected BEFORE raw RAG references so the
-  // LLM treats it as higher-level, already-synthesized context (LLM-Wiki
-  // flywheel: reuse accumulated knowledge instead of rediscovering per query).
-  const wikiSection = buildWikiContextSection(input.wikiEntries ?? []);
-  if (wikiSection) {
-    userParts.push("");
-    userParts.push(wikiSection);
-  }
-
-  const ragSection = buildRagReferencesSection(input.ragReferences);
-  if (ragSection) {
-    userParts.push("");
-    userParts.push(ragSection);
-  }
-
   userParts.push("");
   userParts.push(buildTargetSectionBlock(input.section, input.constraints?.wordLimit ?? input.section.estimatedWords));
 
@@ -380,23 +274,12 @@ export function assembleContext(input: ContextInput, docLocale: DocumentLanguage
   } else {
     userParts.push("");
     userParts.push(
-      "Write the final reader-facing content for the target section now. Use the reference material only as background support, and do not mention the reference material itself. Do not repeat the target section title or section number."
-    );
-  }
-
-  const needsDiagram = sectionNeedsDiagram(input.section, input.constraints);
-
-  if (needsDiagram) {
-    userParts.push("");
-    userParts.push(
-      docLocale === "zh-CN"
-        ? "\u5f53\u524d\u7ae0\u8282\u9700\u8981\u56fe\u8868\u3002\u8bf7\u5728\u6700\u80fd\u8bf4\u660e\u67b6\u6784\u3001\u6d41\u7a0b\u3001\u62d3\u6251\u6216\u65f6\u5e8f\u7684\u6bb5\u843d\u540e\uff0c\u51c6\u786e\u63d2\u5165\u4e00\u4e2a [DIAGRAM_REQUEST:...] \u5757\u3002\u5fc5\u987b\u4f7f\u7528\u7cfb\u7edf\u63d0\u793a\u4e2d\u5b9a\u4e49\u7684\u8bed\u6cd5\u3002"
-        : "This section requires a diagram. Include exactly one [DIAGRAM_REQUEST:...] block after the paragraph that best describes the architecture, flow, topology, or sequence. Use the syntax documented in the system prompt."
+      "Write the final reader-facing content for the target section now. Do not repeat the target section title or section number."
     );
   }
 
   return [
-    buildSystemMessage(docLocale, { needsDiagram, isParentSection: isParent }),
+    buildSystemMessage(docLocale, { isParentSection: isParent }),
     { role: "user", content: userParts.join("\n") },
   ];
 }

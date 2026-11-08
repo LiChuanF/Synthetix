@@ -5,8 +5,6 @@ interface OutlineSection {
   keyPoints?: string[];
   estimatedWords?: number;
   writingRequirements?: string;
-  retrievalQuery?: string;
-  referenceHints?: string[];
   children?: OutlineSection[];
 }
 
